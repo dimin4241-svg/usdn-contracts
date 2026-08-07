@@ -4,17 +4,13 @@ pragma solidity 0.8.26;
 import { UsdnProtocolBaseFixture } from "../utils/Fixtures.sol";
 import { IRebalancer } from "../../../../src/interfaces/Rebalancer/IRebalancer.sol";
 
-/// @notice Stronger reachability control for the multi-tick liquidation rounding
-/// issue. The initialize()-created bootstrap position is first removed by a
-/// normal single-tick public liquidation. The later dangerous final batch then
-/// contains only positions created through ordinary initiate/validate opens.
+/// @notice Regression harness for the multi-tick liquidation rounding issue.
+/// The initialize()-created bootstrap position is first removed by a normal
+/// single-tick public liquidation. The final batch then contains only positions
+/// created through ordinary initiate/validate opens.
 contract TestLiquidationRoundingOrdinaryPositions is UsdnProtocolBaseFixture {
     uint128 internal constant ENTRY_PRICE = 2000 ether;
     uint128 internal constant BOOTSTRAP_LIQ_PRICE = 980 ether;
-    // Keep the final price inside the narrow window where both ordinary ticks
-    // are liquidatable but their no-penalty values are still positive. The
-    // previous $870 probe put the lower tick into bad debt and therefore tested
-    // a different arithmetic regime.
     uint128 internal constant FINAL_CRASH_PRICE = 880 ether;
 
     address internal constant USER_A = address(0xCAFE);
@@ -44,9 +40,6 @@ contract TestLiquidationRoundingOrdinaryPositions is UsdnProtocolBaseFixture {
         super._setUp(params);
         bootstrapTick = initialPosition.tick;
 
-        // Two minimum-size ordinary positions at materially lower liquidation
-        // prices. They are small enough to fit the production open-imbalance
-        // limit while the large bootstrap position still exists.
         posA = setUpUserPositionInLong(
             OpenParams({
                 user: USER_A,
@@ -69,14 +62,7 @@ contract TestLiquidationRoundingOrdinaryPositions is UsdnProtocolBaseFixture {
         assertGt(bootstrapTick, posA.tick, "bootstrap must liquidate first");
         assertGt(posA.tick, posB.tick, "ordinary positions need distinct lower ticks");
 
-        // MockOracleMiddleware timestamps public liquidations slightly behind
-        // block.timestamp. Add one more fixture delay so the $980 observation is
-        // strictly newer than the last validation/accounting timestamp.
         _waitDelay();
-
-        // First price move liquidates only the bootstrap tick. Because this is a
-        // one-tick liquidation it cannot create the positive rounding residue.
-        // The two ordinary positions remain alive for the later final batch.
         protocol.liquidate(abi.encode(BOOTSTRAP_LIQ_PRICE));
 
         assertEq(protocol.getTotalLongPositions(), 2, "only the two ordinary positions should remain");
@@ -85,7 +71,6 @@ contract TestLiquidationRoundingOrdinaryPositions is UsdnProtocolBaseFixture {
         (Position memory b,) = protocol.getLongPosition(posB);
         assertTrue(a.validated && b.validated, "ordinary positions must survive bootstrap liquidation");
 
-        // Make the later $880 liquidation fresh for the same mock-oracle reason.
         _waitDelay();
     }
 
@@ -96,22 +81,28 @@ contract TestLiquidationRoundingOrdinaryPositions is UsdnProtocolBaseFixture {
         assertNotEq(posB.tick, bootstrapTick, "ordinary B is not bootstrap");
     }
 
-    function test_B_ordinaryOnlyDedicatedLiquidationReverts() public {
-        vm.expectRevert(UsdnProtocolInvalidLongExpo.selector);
+    /// @dev This is the principal regression. On vulnerable v1.0.0 this call
+    /// reverts with UsdnProtocolInvalidLongExpo. After the fix the same public
+    /// two-tick liquidation must commit and leave a valid empty long side.
+    function test_B_ordinaryOnlyDedicatedLiquidationSucceedsAndPreservesInvariant() public {
         protocol.liquidate(abi.encode(FINAL_CRASH_PRICE));
+
+        assertEq(protocol.getTotalLongPositions(), 0, "all ordinary positions liquidated");
+        assertEq(protocol.getTotalExpo(), 0, "all ordinary exposure removed");
+        assertEq(protocol.getBalanceLong(), 0, "no rounding residue may remain on long side");
+        assertLe(protocol.getBalanceLong(), protocol.getTotalExpo(), "long balance invariant");
     }
 
-    /// @dev Isolation control: remove only the downstream Rebalancer after the
-    /// bootstrap is already gone, then inspect the accounting state produced by
-    /// liquidating the two ordinary ticks together.
-    function test_C_ordinaryOnlySourceStateBreaksInvariantWithoutSink() public {
+    /// @dev Source-level regression independent of the downstream Rebalancer.
+    /// Removing the sink must not reveal a one-wei residue anymore.
+    function test_C_ordinaryOnlySourceAccountingIsReconciledWithoutSink() public {
         vm.prank(managers.setExternalManager);
         protocol.setRebalancer(IRebalancer(address(0)));
 
         protocol.liquidate(abi.encode(FINAL_CRASH_PRICE));
 
         assertEq(protocol.getTotalExpo(), 0, "all ordinary exposure removed");
-        assertGt(protocol.getBalanceLong(), 0, "positive residue remains");
-        assertGt(protocol.getBalanceLong(), protocol.getTotalExpo(), "accounting invariant broken");
+        assertEq(protocol.getBalanceLong(), 0, "rounding residue must be reconciled");
+        assertLe(protocol.getBalanceLong(), protocol.getTotalExpo(), "accounting invariant preserved");
     }
 }
