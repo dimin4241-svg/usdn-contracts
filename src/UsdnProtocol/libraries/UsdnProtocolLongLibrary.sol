@@ -939,26 +939,33 @@ library UsdnProtocolLongLibrary {
         data.tempLongBalance -= effects.remainingCollateral;
         data.tempVaultBalance += effects.remainingCollateral;
 
-        // `_tickValue` rounds every liquidated tick independently. When several ticks are
-        // processed in the same batch, the sum of those floors can undershoot the aggregate
-        // long balance by a few wei. For N independently rounded ticks, a positive residual
-        // caused only by this rounding is strictly smaller than N wei.
+        // Each liquidated tick is valued independently with integer arithmetic. Summing those
+        // rounded values can make the temporary long balance inconsistent with the aggregate
+        // exposure/accumulator state after the ticks have been removed.
         //
-        // Reconcile only that bounded rounding residue. A larger discrepancy cannot be
-        // explained by per-tick floor rounding and must remain an invariant failure instead
-        // of being silently absorbed by the vault.
+        // Only reconcile when that inconsistency would make the long trading exposure negative.
+        // The liquidation multiplier before the batch is proportional to
+        // `longTradingExpo / accumulator`. Removing positions should not change that multiplier
+        // at the same asset price, so derive the representable trading exposure of the remaining
+        // aggregate state from the updated accumulator instead of guessing a wei tolerance.
         int256 totalExpo = s._totalExpo.toInt256();
         if (data.tempLongBalance > totalExpo) {
-            int256 roundingResidual = data.tempLongBalance - totalExpo;
-            uint256 liquidatedTickCount = effects.liquidatedTicks.length;
-            if (liquidatedTickCount == 0 || uint256(roundingResidual) >= liquidatedTickCount) {
-                revert IUsdnProtocolErrors.UsdnProtocolInvalidLongExpo();
+            uint256 remainingTradingExpo;
+            if (s._totalExpo != 0) {
+                remainingTradingExpo =
+                    s._liqMultiplierAccumulator.mul(data.longTradingExpo).div(data.accumulator);
+                if (remainingTradingExpo > s._totalExpo) {
+                    revert IUsdnProtocolErrors.UsdnProtocolInvalidLongExpo();
+                }
             }
 
-            data.tempLongBalance = totalExpo;
-            data.tempVaultBalance += roundingResidual;
-            effects.remainingCollateral += roundingResidual;
+            int256 reconciledLongBalance = (s._totalExpo - remainingTradingExpo).toInt256();
+            int256 reconciliation = data.tempLongBalance - reconciledLongBalance;
+            data.tempLongBalance = reconciledLongBalance;
+            data.tempVaultBalance += reconciliation;
+            effects.remainingCollateral += reconciliation;
         }
+
     }
 
     /**
