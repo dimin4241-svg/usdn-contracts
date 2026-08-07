@@ -12,6 +12,9 @@ jobs:
   baseline:
     runs-on: ubuntu-latest
     steps:
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -29,5 +32,8 @@ jobs:
       - name: Install deps
         run: npm ci && forge soldeer install
 
-      - name: Run full USDN protocol unit suite without Rust helper
+      - name: Build upstream test_utils
+        run: cargo build --release
+
+      - name: Run full USDN protocol unit suite
         run: forge test --match-path 'test/unit/UsdnProtocol/**/*.t.sol' -vv
