@@ -29,5 +29,20 @@ jobs:
       - name: Install deps
         run: npm ci && forge soldeer install
 
-      - name: Run ordinary-position fix regression
+      - name: Check formatting
+        run: forge fmt --check
+
+      - name: Run ordinary-only rounding regression
         run: forge test --match-contract TestLiquidationRoundingOrdinaryPositions -vvv
+
+      - name: Run production-config rounding regression
+        run: forge test --match-contract TestLiquidationRoundingProductionInvariant -vvv
+
+      - name: Preserve Rebalancer invariant checks
+        run: forge test --match-contract TestUsdnProtocolLongTriggerRebalancer -vvv
+
+      - name: Run core liquidation-position tests
+        run: forge test --match-contract TestUsdnProtocolLongLiquidatePositions -vvv
+
+      - name: Run public liquidation action tests
+        run: forge test --match-path test/unit/UsdnProtocol/Actions/Liquidation.t.sol -vvv
