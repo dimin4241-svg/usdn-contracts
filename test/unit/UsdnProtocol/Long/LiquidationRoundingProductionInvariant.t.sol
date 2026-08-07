@@ -3,6 +3,7 @@ pragma solidity 0.8.26;
 
 import { DEPLOYER } from "../../../utils/Constants.sol";
 import { UsdnProtocolBaseFixture } from "../utils/Fixtures.sol";
+import { IRebalancer } from "../../../../src/interfaces/Rebalancer/IRebalancer.sol";
 
 /// @notice Production-configuration reachability and severity harness for the
 /// USDN multi-tick liquidation rounding invariant.
@@ -196,5 +197,21 @@ contract TestLiquidationRoundingProductionInvariant is UsdnProtocolBaseFixture {
         PendingAction memory pending = protocol.getUserPendingAction(DEPLOYER);
         assertEq(uint256(pending.action), uint256(ProtocolAction.None), "withdrawal must be cleared");
         assertGt(wstETH.balanceOf(DEPLOYER), assetBefore, "victim must receive underlying");
+    }
+
+    /// @dev Isolation control only. The entire vulnerable state is built with
+    /// the production Rebalancer enabled. Immediately before liquidation we
+    /// remove only that downstream sink, so the exact pre-sink accounting state
+    /// can commit and be inspected. This is not needed for reachability: test_B
+    /// already proves the production Rebalancer path reverts.
+    function test_E_withoutRebalancerSinkCommitsExactOneWeiResidue() public {
+        vm.prank(managers.setExternalManager);
+        protocol.setRebalancer(IRebalancer(address(0)));
+
+        protocol.liquidate(abi.encode(CRASH_PRICE));
+
+        assertEq(protocol.getTotalExpo(), 0, "all long exposure must be removed");
+        assertEq(protocol.getBalanceLong(), 1, "exact one-wei long balance residue");
+        assertGt(protocol.getBalanceLong(), protocol.getTotalExpo(), "pre-sink invariant must be broken");
     }
 }
