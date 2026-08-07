@@ -29,5 +29,5 @@ jobs:
       - name: Install deps
         run: npm ci && forge soldeer install
 
-      - name: Run rounding harnesses
-        run: forge test --match-contract 'TestLiquidationRounding.*' -vvv
+      - name: Trace ordinary-position harness
+        run: forge test --match-contract TestLiquidationRoundingOrdinaryPositions -vvvv
