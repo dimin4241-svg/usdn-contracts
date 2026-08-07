@@ -1,0 +1,36 @@
+name: USDN mainnet liquidation history
+
+on:
+  push:
+    branches:
+      - security/usdn-mainnet-history
+
+permissions:
+  contents: read
+
+jobs:
+  history:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+      - name: Scan live deployment and liquidation history
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROTOCOL=0x656cB8C6d154Aad29d8771384089be5B5141f01a
+          RPC=https://ethereum-rpc.publicnode.com
+          echo "forge=$(forge --version | head -1)"
+          echo "latest=$(cast block-number --rpc-url $RPC)"
+          echo "CURRENT STATE"
+          cast call $PROTOCOL 'getTotalExpo()(uint256)' --rpc-url $RPC
+          cast call $PROTOCOL 'getBalanceLong()(uint256)' --rpc-url $RPC
+          cast call $PROTOCOL 'getBalanceVault()(uint256)' --rpc-url $RPC
+          cast call $PROTOCOL 'getTotalLongPositions()(uint256)' --rpc-url $RPC
+          cast call $PROTOCOL 'getHighestPopulatedTick()(int24)' --rpc-url $RPC
+          cast call $PROTOCOL 'getLiquidationIteration()(uint16)' --rpc-url $RPC
+          echo "LIQUIDATED TICKS"
+          cast logs --rpc-url $RPC --address $PROTOCOL --from-block 21670000 --to-block latest \
+            'LiquidatedTick(int24 indexed tick,uint256 indexed oldTickVersion,uint256 liquidationPrice,uint256 effectiveTickPrice,int256 remainingCollateral)'
