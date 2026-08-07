@@ -938,6 +938,34 @@ library UsdnProtocolLongLibrary {
         // transfer remaining collateral to vault or pay bad debt
         data.tempLongBalance -= effects.remainingCollateral;
         data.tempVaultBalance += effects.remainingCollateral;
+
+        // Each liquidated tick is valued independently with integer arithmetic. Summing those
+        // rounded values can make the temporary long balance inconsistent with the aggregate
+        // exposure/accumulator state after the ticks have been removed.
+        //
+        // Only reconcile when that inconsistency would make the long trading exposure negative.
+        // The liquidation multiplier before the batch is proportional to
+        // `longTradingExpo / accumulator`. Removing positions should not change that multiplier
+        // at the same asset price, so derive the representable trading exposure of the remaining
+        // aggregate state from the updated accumulator instead of guessing a wei tolerance.
+        int256 totalExpo = s._totalExpo.toInt256();
+        if (data.tempLongBalance > totalExpo) {
+            uint256 remainingTradingExpo;
+            if (s._totalExpo != 0) {
+                remainingTradingExpo =
+                    s._liqMultiplierAccumulator.mul(data.longTradingExpo).div(data.accumulator);
+                if (remainingTradingExpo > s._totalExpo) {
+                    revert IUsdnProtocolErrors.UsdnProtocolInvalidLongExpo();
+                }
+            }
+
+            int256 reconciledLongBalance = (s._totalExpo - remainingTradingExpo).toInt256();
+            int256 reconciliation = data.tempLongBalance - reconciledLongBalance;
+            data.tempLongBalance = reconciledLongBalance;
+            data.tempVaultBalance += reconciliation;
+            effects.remainingCollateral += reconciliation;
+        }
+
     }
 
     /**
