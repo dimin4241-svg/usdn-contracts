@@ -8,11 +8,9 @@ import { IUsdnProtocolErrors } from "../../../src/interfaces/UsdnProtocol/IUsdnP
 import { IBaseOracleMiddleware } from "../../../src/interfaces/OracleMiddleware/IBaseOracleMiddleware.sol";
 import { PriceInfo } from "../../../src/interfaces/OracleMiddleware/IOracleMiddlewareTypes.sol";
 
-/// @notice Read-only reachability probe against a fork of the *current* USDN
-/// mainnet state. The only mocked dependency is the oracle return value so we
-/// can ask the real deployed protocol how it behaves at prospective prices.
-/// No protocol storage, positions, rebalancer state or accounting values are
-/// synthesized.
+/// @notice Reachability probe against a fork of the current USDN mainnet state.
+/// Only the oracle return value is mocked. Protocol storage, positions,
+/// accumulator, balances and Rebalancer state are the live deployed values.
 contract TestCurrentMainnetLiquidationReachability is Test {
     address internal constant PROTOCOL = 0x656cB8C6d154Aad29d8771384089be5B5141f01a;
     string internal constant RPC = "https://ethereum-rpc.publicnode.com";
@@ -37,9 +35,6 @@ contract TestCurrentMainnetLiquidationReachability is Test {
     }
 
     function _mockOraclePrice(uint256 price) internal {
-        // liquidate() forwards the caller's oracle fee. Returning zero lets the
-        // fork call exercise liquidation accounting without needing live Pyth
-        // update bytes. The price itself is the only changed input.
         vm.mockCall(
             oracle,
             abi.encodeWithSelector(IBaseOracleMiddleware.validationCost.selector),
@@ -61,55 +56,74 @@ contract TestCurrentMainnetLiquidationReachability is Test {
         }
     }
 
-    /// @dev Scan percentage price moves from the exact current state. Every
-    /// candidate starts from the identical mainnet snapshot. A hit on
-    /// UsdnProtocolInvalidLongExpo is direct current-state reachability proof.
+    /// @dev For every candidate price, repeatedly call the real deployed
+    /// liquidate() on the fork. This matters because public liquidation is
+    /// capped per call; a deep price move can require 10 + 10 + ... + final
+    /// ticks, and the rounding bug is most relevant in the final batch.
     function test_scanCurrentMainnetStateForInvalidLongExpo() public {
         uint256 initialPositions = protocol.getTotalLongPositions();
         uint256 lastPrice = protocol.getLastPrice();
         uint256 snapshot = vm.snapshotState();
         bool sawMultiTickLiquidation;
+        bool sawMultiBatchLiquidation;
 
-        // 99.5% down through 35% of the protocol's stored price in 0.5% steps.
-        // This intentionally includes extreme prices: the goal is first to
-        // answer reachability, then narrow the minimum move if a hit exists.
-        for (uint256 bps = 9950; bps >= 3500; bps -= 50) {
+        for (uint256 bps = 9950; bps >= 3000; bps -= 50) {
             vm.revertToState(snapshot);
             snapshot = vm.snapshotState();
 
             uint256 price = lastPrice * bps / 10_000;
             _mockOraclePrice(price);
+            uint256 previousPositions = initialPositions;
+            uint256 successfulBatches;
 
-            (bool ok, bytes memory data) = PROTOCOL.call(abi.encodeWithSignature("liquidate(bytes)", bytes("")));
-            if (!ok) {
-                bytes4 sel = _selector(data);
-                if (sel == IUsdnProtocolErrors.UsdnProtocolInvalidLongExpo.selector) {
-                    console2.log("CURRENT MAINNET INVALID_LONG_EXPO HIT");
-                    console2.log("price bps", bps);
-                    console2.log("price", price);
-                    return;
+            // 35 positions exist in the captured live state, so eight calls are
+            // comfortably above the number needed even if every batch were
+            // capped at only a few ticks.
+            for (uint256 batch; batch < 8; ++batch) {
+                (bool ok, bytes memory data) = PROTOCOL.call(abi.encodeWithSignature("liquidate(bytes)", bytes("")));
+                if (!ok) {
+                    bytes4 sel = _selector(data);
+                    if (sel == IUsdnProtocolErrors.UsdnProtocolInvalidLongExpo.selector) {
+                        console2.log("CURRENT MAINNET INVALID_LONG_EXPO HIT");
+                        console2.log("price bps", bps);
+                        console2.log("price", price);
+                        console2.log("failed batch index", batch);
+                        console2.log("successful batches before failure", successfulBatches);
+                        console2.log("positions before failing batch", previousPositions);
+                        return;
+                    }
+                    // A different revert ends this candidate; it must not be
+                    // misclassified as the accounting bug.
+                    if (bps % 500 == 0) {
+                        console2.log("other revert at bps", bps);
+                        console2.log("batch", batch);
+                        console2.logBytes4(sel);
+                    }
+                    break;
                 }
-                // Other reverts are diagnostic. Log only the selector so the
-                // scan remains readable.
-                if (bps % 500 == 0) {
-                    console2.log("other revert at bps", bps);
-                    console2.logBytes4(sel);
-                }
-            } else {
+
                 uint256 remaining = protocol.getTotalLongPositions();
-                uint256 removed = initialPositions - remaining;
-                if (removed >= 2 && !sawMultiTickLiquidation) {
+                uint256 removedThisBatch = previousPositions - remaining;
+                if (removedThisBatch == 0) break;
+
+                ++successfulBatches;
+                if (removedThisBatch >= 2 && !sawMultiTickLiquidation) {
                     sawMultiTickLiquidation = true;
                     console2.log("first successful multi-tick candidate bps", bps);
                     console2.log("price", price);
-                    console2.log("positions removed", removed);
+                    console2.log("positions removed in batch", removedThisBatch);
                 }
+                if (successfulBatches >= 2) sawMultiBatchLiquidation = true;
+
+                previousPositions = remaining;
+                if (remaining == 0) break;
             }
 
-            if (bps == 3500) break;
+            if (bps == 3000) break;
         }
 
-        console2.log("no InvalidLongExpo found in current-state coarse scan");
+        console2.log("no InvalidLongExpo found in current-state repeated-batch scan");
         console2.log("saw successful multi-tick liquidation", sawMultiTickLiquidation);
+        console2.log("saw successful multi-batch liquidation", sawMultiBatchLiquidation);
     }
 }
