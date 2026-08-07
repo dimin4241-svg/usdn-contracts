@@ -938,6 +938,27 @@ library UsdnProtocolLongLibrary {
         // transfer remaining collateral to vault or pay bad debt
         data.tempLongBalance -= effects.remainingCollateral;
         data.tempVaultBalance += effects.remainingCollateral;
+
+        // `_tickValue` rounds every liquidated tick independently. When several ticks are
+        // processed in the same batch, the sum of those floors can undershoot the aggregate
+        // long balance by a few wei. For N independently rounded ticks, a positive residual
+        // caused only by this rounding is strictly smaller than N wei.
+        //
+        // Reconcile only that bounded rounding residue. A larger discrepancy cannot be
+        // explained by per-tick floor rounding and must remain an invariant failure instead
+        // of being silently absorbed by the vault.
+        int256 totalExpo = s._totalExpo.toInt256();
+        if (data.tempLongBalance > totalExpo) {
+            int256 roundingResidual = data.tempLongBalance - totalExpo;
+            uint256 liquidatedTickCount = effects.liquidatedTicks.length;
+            if (liquidatedTickCount == 0 || uint256(roundingResidual) >= liquidatedTickCount) {
+                revert IUsdnProtocolErrors.UsdnProtocolInvalidLongExpo();
+            }
+
+            data.tempLongBalance = totalExpo;
+            data.tempVaultBalance += roundingResidual;
+            effects.remainingCollateral += roundingResidual;
+        }
     }
 
     /**
