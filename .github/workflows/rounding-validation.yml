@@ -3,7 +3,7 @@ name: USDN rounding validation
 on:
   push:
     branches:
-      - security/usdn-rounding-production-v3
+      - security/usdn-rounding-ordinary-positions
 
 permissions:
   contents: read
@@ -29,5 +29,5 @@ jobs:
       - name: Install deps
         run: npm ci && forge soldeer install
 
-      - name: Run production rounding harness
-        run: forge test --match-contract TestLiquidationRoundingProductionInvariant -vvv
+      - name: Run rounding harnesses
+        run: forge test --match-contract 'TestLiquidationRounding.*' -vvv
