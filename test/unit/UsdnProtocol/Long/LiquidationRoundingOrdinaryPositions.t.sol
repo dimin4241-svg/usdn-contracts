@@ -57,6 +57,7 @@ contract TestLiquidationRoundingOrdinaryPositions is UsdnProtocolBaseFixture {
             ""
         );
         _waitDelay();
+        vm.prank(DEPLOYER);
         protocol.validateClosePosition(payable(DEPLOYER), abi.encode(ENTRY_PRICE), EMPTY_PREVIOUS_DATA);
         _waitDelay();
 
