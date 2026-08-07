@@ -47,10 +47,14 @@ contract TestLiquidationRoundingNearMarket is UsdnProtocolBaseFixture {
         assertEq(protocol.getTotalExpo(), 0, "bootstrap exposure must be gone");
         assertEq(protocol.getBalanceLong(), 0, "bootstrap balance must be gone");
 
-        // Return to the entry market and create a large high-leverage normal
-        // position to move the empty long side toward the production imbalance
-        // target, followed by a small position on the adjacent lower tick.
+        // Move the protocol's accounting price back to the intended entry
+        // market through the normal public price-update/liquidation path before
+        // requesting near-market liquidation prices on new user positions.
         _waitDelay();
+        _waitDelay();
+        protocol.liquidate(abi.encode(ENTRY_PRICE));
+        assertEq(protocol.getTotalLongPositions(), 0, "price update must not create user positions");
+
         posA = setUpUserPositionInLong(
             OpenParams({
                 user: USER_A,
