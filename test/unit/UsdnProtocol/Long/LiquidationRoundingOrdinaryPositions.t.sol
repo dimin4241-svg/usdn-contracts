@@ -44,8 +44,11 @@ contract TestLiquidationRoundingOrdinaryPositions is UsdnProtocolBaseFixture {
         assertEq(bootstrap.user, DEPLOYER, "bootstrap owner");
         assertEq(bootstrap.amount, 200 ether, "bootstrap amount");
 
+        // Cache before vm.prank: a one-shot prank would otherwise be consumed
+        // by the external getter used to evaluate the call value.
+        uint256 securityDeposit = protocol.getSecurityDepositValue();
         vm.prank(DEPLOYER);
-        protocol.initiateClosePosition{ value: protocol.getSecurityDepositValue() }(
+        protocol.initiateClosePosition{ value: securityDeposit }(
             initialPosition,
             bootstrap.amount,
             DISABLE_MIN_PRICE,
