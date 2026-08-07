@@ -1,0 +1,38 @@
+name: USDN recent liquidation receipts
+
+on:
+  push:
+    branches:
+      - security/usdn-current-mainnet-fork
+
+permissions:
+  contents: read
+
+jobs:
+  receipts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+      - name: Inspect known recent liquidation transactions
+        shell: bash
+        run: |
+          set -euo pipefail
+          RPC=https://ethereum-rpc.publicnode.com
+          PROTOCOL=0x656cb8c6d154aad29d8771384089be5b5141f01a
+          TOPIC=0xb64624ffaac1b0226fccb859570380e00ddef038d67b89cd781c6fac2703a9a7
+          TXS=(
+            0xc314e12d0b02090b7ee56da4c74a0284ce730c8ff1c0d565309c752376cb1cdc
+            0x8612e92fdc17641e2a2f7ae2f33bfd6a75486cf93305f135b0d74bdfcd6579f3
+            0x8f3b55fe51a2fcf4c1c4096f5395010108ec8565d8ad462cc77d93b333009866
+            0x1fb91a752c72ddca811ee0d6b76402dff64328b7ab67431b19de77462232e4c3
+          )
+          for TX in "${TXS[@]}"; do
+            echo "===== $TX ====="
+            R=$(cast receipt "$TX" --json --rpc-url "$RPC")
+            echo "$R" | jq -r '"block=" + (.blockNumber|tostring) + " status=" + (.status|tostring) + " gasUsed=" + (.gasUsed|tostring)'
+            echo "$R" | jq --arg p "$PROTOCOL" --arg t "$TOPIC" '[.logs[] | select((.address|ascii_downcase)==$p and (.topics[0]|ascii_downcase)==$t)] | "LiquidatedTick count=\(length)"'
+            echo "$R" | jq --arg p "$PROTOCOL" --arg t "$TOPIC" -c '.logs[] | select((.address|ascii_downcase)==$p and (.topics[0]|ascii_downcase)==$t) | {tickTopic:.topics[1],versionTopic:.topics[2],data:.data,logIndex:.logIndex}'
+          done
