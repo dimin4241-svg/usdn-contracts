@@ -25,71 +25,51 @@ jobs:
           path = Path("src/UsdnProtocol/libraries/UsdnProtocolLongLibrary.sol")
           text = path.read_text()
 
-          bounded = '''        // transfer remaining collateral to vault or pay bad debt
-          data.tempLongBalance -= effects.remainingCollateral;
-          data.tempVaultBalance += effects.remainingCollateral;
+          start_marker = "        // transfer remaining collateral to vault or pay bad debt\n        data.tempLongBalance -= effects.remainingCollateral;\n        data.tempVaultBalance += effects.remainingCollateral;\n"
+          old_comment = "        // `_tickValue` rounds every liquidated tick independently."
+          next_marker = "\n    }\n\n    /**\n     * @notice Checks and reverts if the position's trading exposure exceeds the imbalance limits."
 
-          // `_tickValue` rounds every liquidated tick independently. When several ticks are
-          // processed in the same batch, the sum of those floors can undershoot the aggregate
-          // long balance by a few wei. For N independently rounded ticks, a positive residual
-          // caused only by this rounding is strictly smaller than N wei.
-          //
-          // Reconcile only that bounded rounding residue. A larger discrepancy cannot be
-          // explained by per-tick floor rounding and must remain an invariant failure instead
-          // of being silently absorbed by the vault.
-          int256 totalExpo = s._totalExpo.toInt256();
-          if (data.tempLongBalance > totalExpo) {
-              int256 roundingResidual = data.tempLongBalance - totalExpo;
-              uint256 liquidatedTickCount = effects.liquidatedTicks.length;
-              if (liquidatedTickCount == 0 || uint256(roundingResidual) >= liquidatedTickCount) {
-                  revert IUsdnProtocolErrors.UsdnProtocolInvalidLongExpo();
-              }
+          start = text.index(start_marker)
+          if old_comment not in text[start:]:
+              if "Only reconcile when that inconsistency would make the long trading exposure negative." in text[start:]:
+                  print("accumulator reconciliation already present")
+                  raise SystemExit(0)
+              raise SystemExit("bounded-fix marker not found")
+          end = text.index(next_marker, start)
 
-              data.tempLongBalance = totalExpo;
-              data.tempVaultBalance += roundingResidual;
-              effects.remainingCollateral += roundingResidual;
-          }
-'''
+          replacement = (
+              "        // transfer remaining collateral to vault or pay bad debt\n"
+              "        data.tempLongBalance -= effects.remainingCollateral;\n"
+              "        data.tempVaultBalance += effects.remainingCollateral;\n\n"
+              "        // Each liquidated tick is valued independently with integer arithmetic. Summing those\n"
+              "        // rounded values can make the temporary long balance inconsistent with the aggregate\n"
+              "        // exposure/accumulator state after the ticks have been removed.\n"
+              "        //\n"
+              "        // Only reconcile when that inconsistency would make the long trading exposure negative.\n"
+              "        // The liquidation multiplier before the batch is proportional to\n"
+              "        // `longTradingExpo / accumulator`. Removing positions should not change that multiplier\n"
+              "        // at the same asset price, so derive the representable trading exposure of the remaining\n"
+              "        // aggregate state from the updated accumulator instead of guessing a wei tolerance.\n"
+              "        int256 totalExpo = s._totalExpo.toInt256();\n"
+              "        if (data.tempLongBalance > totalExpo) {\n"
+              "            uint256 remainingTradingExpo;\n"
+              "            if (s._totalExpo != 0) {\n"
+              "                remainingTradingExpo =\n"
+              "                    s._liqMultiplierAccumulator.mul(data.longTradingExpo).div(data.accumulator);\n"
+              "                if (remainingTradingExpo > s._totalExpo) {\n"
+              "                    revert IUsdnProtocolErrors.UsdnProtocolInvalidLongExpo();\n"
+              "                }\n"
+              "            }\n\n"
+              "            int256 reconciledLongBalance = (s._totalExpo - remainingTradingExpo).toInt256();\n"
+              "            int256 reconciliation = data.tempLongBalance - reconciledLongBalance;\n"
+              "            data.tempLongBalance = reconciledLongBalance;\n"
+              "            data.tempVaultBalance += reconciliation;\n"
+              "            effects.remainingCollateral += reconciliation;\n"
+              "        }\n"
+          )
 
-          reconciled = '''        // transfer remaining collateral to vault or pay bad debt
-          data.tempLongBalance -= effects.remainingCollateral;
-          data.tempVaultBalance += effects.remainingCollateral;
-
-          // Each liquidated tick is valued independently with integer arithmetic. Summing those
-          // rounded values can make the temporary long balance inconsistent with the aggregate
-          // exposure/accumulator state after the ticks have been removed.
-          //
-          // Only reconcile when that inconsistency would make the long trading exposure negative.
-          // The liquidation multiplier before the batch is proportional to
-          // `longTradingExpo / accumulator`. Removing positions should not change that multiplier
-          // at the same asset price, so derive the representable trading exposure of the remaining
-          // aggregate state from the updated accumulator instead of guessing a wei tolerance.
-          int256 totalExpo = s._totalExpo.toInt256();
-          if (data.tempLongBalance > totalExpo) {
-              uint256 remainingTradingExpo;
-              if (s._totalExpo != 0) {
-                  remainingTradingExpo =
-                      s._liqMultiplierAccumulator.mul(data.longTradingExpo).div(data.accumulator);
-                  if (remainingTradingExpo > s._totalExpo) {
-                      revert IUsdnProtocolErrors.UsdnProtocolInvalidLongExpo();
-                  }
-              }
-
-              int256 reconciledLongBalance = (s._totalExpo - remainingTradingExpo).toInt256();
-              int256 reconciliation = data.tempLongBalance - reconciledLongBalance;
-              data.tempLongBalance = reconciledLongBalance;
-              data.tempVaultBalance += reconciliation;
-              effects.remainingCollateral += reconciliation;
-          }
-'''
-
-          if reconciled in text:
-              print("accumulator reconciliation already present")
-          elif bounded in text:
-              path.write_text(text.replace(bounded, reconciled))
-              print("replaced bounded fix with accumulator reconciliation")
-          else:
-              raise SystemExit("expected bounded fix block was not found")
+          path.write_text(text[:start] + replacement + text[end:])
+          print("replaced heuristic bound with accumulator reconciliation")
           PY
 
       - name: Commit source fix
