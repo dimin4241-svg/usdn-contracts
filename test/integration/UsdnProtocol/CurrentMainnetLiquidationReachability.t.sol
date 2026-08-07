@@ -40,7 +40,6 @@ contract TestCurrentMainnetLiquidationReachability is Test {
             abi.encodeWithSelector(IBaseOracleMiddleware.validationCost.selector),
             abi.encode(uint256(0))
         );
-
         PriceInfo memory info = PriceInfo({ price: price, neutralPrice: price, timestamp: block.timestamp });
         vm.mockCall(
             oracle,
@@ -56,46 +55,42 @@ contract TestCurrentMainnetLiquidationReachability is Test {
         }
     }
 
-    /// @dev For every candidate price, repeatedly call the real deployed
-    /// liquidate() on the fork. This matters because public liquidation is
-    /// capped per call; a deep price move can require 10 + 10 + ... + final
-    /// ticks, and the rounding bug is most relevant in the final batch.
+    /// @dev Dense prospective-price scan from the exact current mainnet state.
+    /// Every whole-dollar price starts from the identical snapshot, and the
+    /// real deployed liquidate() is repeatedly called until the candidate is
+    /// fully processed, stops making progress, or reverts.
     function test_scanCurrentMainnetStateForInvalidLongExpo() public {
         uint256 initialPositions = protocol.getTotalLongPositions();
         uint256 lastPrice = protocol.getLastPrice();
+        uint256 highestDollar = lastPrice / 1 ether;
         uint256 snapshot = vm.snapshotState();
         bool sawMultiTickLiquidation;
         bool sawMultiBatchLiquidation;
 
-        for (uint256 bps = 9950; bps >= 3000; bps -= 50) {
+        for (uint256 dollar = highestDollar; dollar >= 500; --dollar) {
             vm.revertToState(snapshot);
             snapshot = vm.snapshotState();
 
-            uint256 price = lastPrice * bps / 10_000;
+            uint256 price = dollar * 1 ether;
             _mockOraclePrice(price);
             uint256 previousPositions = initialPositions;
             uint256 successfulBatches;
 
-            // 35 positions exist in the captured live state, so eight calls are
-            // comfortably above the number needed even if every batch were
-            // capped at only a few ticks.
             for (uint256 batch; batch < 8; ++batch) {
                 (bool ok, bytes memory data) = PROTOCOL.call(abi.encodeWithSignature("liquidate(bytes)", bytes("")));
                 if (!ok) {
                     bytes4 sel = _selector(data);
                     if (sel == IUsdnProtocolErrors.UsdnProtocolInvalidLongExpo.selector) {
                         console2.log("CURRENT MAINNET INVALID_LONG_EXPO HIT");
-                        console2.log("price bps", bps);
+                        console2.log("price dollar", dollar);
                         console2.log("price", price);
                         console2.log("failed batch index", batch);
                         console2.log("successful batches before failure", successfulBatches);
                         console2.log("positions before failing batch", previousPositions);
                         return;
                     }
-                    // A different revert ends this candidate; it must not be
-                    // misclassified as the accounting bug.
-                    if (bps % 500 == 0) {
-                        console2.log("other revert at bps", bps);
+                    if (dollar % 100 == 0) {
+                        console2.log("other revert at dollar", dollar);
                         console2.log("batch", batch);
                         console2.logBytes4(sel);
                     }
@@ -109,8 +104,7 @@ contract TestCurrentMainnetLiquidationReachability is Test {
                 ++successfulBatches;
                 if (removedThisBatch >= 2 && !sawMultiTickLiquidation) {
                     sawMultiTickLiquidation = true;
-                    console2.log("first successful multi-tick candidate bps", bps);
-                    console2.log("price", price);
+                    console2.log("first successful multi-tick dollar", dollar);
                     console2.log("positions removed in batch", removedThisBatch);
                 }
                 if (successfulBatches >= 2) sawMultiBatchLiquidation = true;
@@ -119,10 +113,10 @@ contract TestCurrentMainnetLiquidationReachability is Test {
                 if (remaining == 0) break;
             }
 
-            if (bps == 3000) break;
+            if (dollar == 500) break;
         }
 
-        console2.log("no InvalidLongExpo found in current-state repeated-batch scan");
+        console2.log("no InvalidLongExpo found in current-state $1 repeated-batch scan");
         console2.log("saw successful multi-tick liquidation", sawMultiTickLiquidation);
         console2.log("saw successful multi-batch liquidation", sawMultiBatchLiquidation);
     }
