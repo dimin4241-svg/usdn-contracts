@@ -16,21 +16,34 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: nightly
-      - name: Scan live deployment and liquidation history
+      - name: Probe historical state providers
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
           PROTOCOL=0x656cB8C6d154Aad29d8771384089be5B5141f01a
-          RPC=https://ethereum-rpc.publicnode.com
-          echo "forge=$(forge --version | head -1)"
-          echo "latest=$(cast block-number --rpc-url $RPC)"
-          echo "CURRENT STATE"
-          cast call $PROTOCOL 'getTotalExpo()(uint256)' --rpc-url $RPC
-          cast call $PROTOCOL 'getBalanceLong()(uint256)' --rpc-url $RPC
-          cast call $PROTOCOL 'getBalanceVault()(uint256)' --rpc-url $RPC
-          cast call $PROTOCOL 'getTotalLongPositions()(uint256)' --rpc-url $RPC
-          cast call $PROTOCOL 'getHighestPopulatedTick()(int24)' --rpc-url $RPC
-          cast call $PROTOCOL 'getLiquidationIteration()(uint16)' --rpc-url $RPC
-          echo "LIQUIDATED TICKS"
-          cast logs --rpc-url $RPC --address $PROTOCOL --from-block 21670000 --to-block latest \
-            'LiquidatedTick(int24 indexed tick,uint256 indexed oldTickVersion,uint256 liquidationPrice,uint256 effectiveTickPrice,int256 remainingCollateral)'
+          EVENT='LiquidatedTick(int24 indexed tick,uint256 indexed oldTickVersion,uint256 liquidationPrice,uint256 effectiveTickPrice,int256 remainingCollateral)'
+          BLOCK=22638958
+          TX=0x1fb91a752c72ddca811ee0d6b76402dff64328b7ab67431b19de77462232e4c3
+          for RPC in \
+            https://public.1rpc.io/eth \
+            https://eth.llamarpc.com \
+            https://ethereum-rpc.publicnode.com
+          do
+            echo "===== RPC $RPC ====="
+            echo '-- historical totalExpo before'
+            cast call $PROTOCOL 'getTotalExpo()(uint256)' --block $((BLOCK-1)) --rpc-url $RPC || true
+            echo '-- historical long balance before'
+            cast call $PROTOCOL 'getBalanceLong()(uint256)' --block $((BLOCK-1)) --rpc-url $RPC || true
+            echo '-- historical total positions before'
+            cast call $PROTOCOL 'getTotalLongPositions()(uint256)' --block $((BLOCK-1)) --rpc-url $RPC || true
+            echo '-- historical highest tick before'
+            cast call $PROTOCOL 'getHighestPopulatedTick()(int24)' --block $((BLOCK-1)) --rpc-url $RPC || true
+            echo '-- historical totalExpo after'
+            cast call $PROTOCOL 'getTotalExpo()(uint256)' --block $BLOCK --rpc-url $RPC || true
+            echo '-- historical long balance after'
+            cast call $PROTOCOL 'getBalanceLong()(uint256)' --block $BLOCK --rpc-url $RPC || true
+            echo '-- event around candidate block'
+            cast logs --rpc-url $RPC --address $PROTOCOL --from-block $BLOCK --to-block $BLOCK "$EVENT" || true
+            echo '-- receipt candidate tx'
+            cast receipt $TX --rpc-url $RPC || true
+          done
