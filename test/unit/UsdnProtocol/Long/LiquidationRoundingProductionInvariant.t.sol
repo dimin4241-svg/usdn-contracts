@@ -29,6 +29,12 @@ contract TestLiquidationRoundingProductionInvariant is UsdnProtocolBaseFixture {
     int24 internal constant EXPECTED_INITIAL_TICK = 69200;
     int24 internal constant EXPECTED_SECOND_TICK = 69100;
 
+    // Use an EOA-like address for fixture user actions. With the production
+    // security deposit enabled, action validation refunds ETH to the validator;
+    // using address(this) would make the harness itself reject the plain ETH
+    // refund and produce an unrelated UsdnProtocolEtherRefundFailed().
+    address internal constant ACTOR = address(0xBEEF);
+
     PositionId internal secondPos;
     uint152 internal victimShares;
 
@@ -50,8 +56,9 @@ contract TestLiquidationRoundingProductionInvariant is UsdnProtocolBaseFixture {
         params.flags.enableRebalancer = true;
         params.flags.enableLiquidationRewards = true;
 
-        // Fund the normal payable action paths. This changes no protocol state.
-        vm.deal(address(this), 10 ether);
+        // Fund only normal payable action callers. This changes no protocol
+        // accounting state and merely supplies the configured security deposit.
+        vm.deal(ACTOR, 10 ether);
         vm.deal(DEPLOYER, 10 ether);
 
         super._setUp(params);
@@ -72,7 +79,7 @@ contract TestLiquidationRoundingProductionInvariant is UsdnProtocolBaseFixture {
         // price, this position belongs to tick 69100 (not 69300).
         secondPos = setUpUserPositionInLong(
             OpenParams({
-                user: address(this),
+                user: ACTOR,
                 untilAction: ProtocolAction.ValidateOpenPosition,
                 positionSize: SECOND_AMOUNT,
                 desiredLiqPrice: SECOND_DESIRED_LIQ,
@@ -84,7 +91,7 @@ contract TestLiquidationRoundingProductionInvariant is UsdnProtocolBaseFixture {
 
         // Bring the small long-heavy imbalance back toward equilibrium using a
         // normal vault deposit. Funding/protocol fees remain enabled throughout.
-        setUpUserPositionInVault(address(this), ProtocolAction.ValidateDeposit, 2 ether, ENTRY_PRICE);
+        setUpUserPositionInVault(ACTOR, ProtocolAction.ValidateDeposit, 2 ether, ENTRY_PRICE);
 
         // Escrow a material fraction of the initial depositor's USDN shares
         // before the price drop. 5% is roughly 9-10 wstETH of vault value in
