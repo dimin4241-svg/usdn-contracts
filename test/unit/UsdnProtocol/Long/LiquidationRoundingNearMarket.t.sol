@@ -37,8 +37,10 @@ contract TestLiquidationRoundingNearMarket is UsdnProtocolBaseFixture {
         vm.deal(USER_B, 10 ether);
         super._setUp(params);
 
-        // Remove the initialize-created position first, before creating either
-        // of the positions used in the final multi-tick batch.
+        // Public liquidation in MockOracleMiddleware is timestamped ~30 seconds
+        // behind block.timestamp. Two validation delays make the observation
+        // strictly newer than initialize()'s last accounting timestamp.
+        _waitDelay();
         _waitDelay();
         protocol.liquidate(abi.encode(BOOTSTRAP_LIQ_PRICE));
         assertEq(protocol.getTotalLongPositions(), 0, "bootstrap must be gone");
