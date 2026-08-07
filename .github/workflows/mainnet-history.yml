@@ -16,45 +16,40 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: nightly
-      - name: Probe archive providers and real liquidation states
+      - name: Probe archive state before real two-tick liquidation
         shell: bash
         run: |
           set -u
           PROTOCOL=0x656cB8C6d154Aad29d8771384089be5B5141f01a
-          OLD_BLOCK=22638958
-          OLD_TX=0x1fb91a752c72ddca811ee0d6b76402dff64328b7ab67431b19de77462232e4c3
           TWO_BLOCK=25240929
-          TWO_TX=0x8612e92fdc17641e2a2f7ae2f33bfd6a75486cf93305f135b0d74bdfcd6579f3
+          OLD_BLOCK=22638958
+
+          call_at () {
+            local RPC=$1 SIG=$2 BLOCK=$3
+            timeout 12s cast call "$PROTOCOL" "$SIG" --block "$BLOCK" --rpc-url "$RPC" 2>&1 || true
+          }
 
           dump_state () {
-            local RPC=$1
-            local BLOCK=$2
+            local RPC=$1 BLOCK=$2
             echo "-- state block $BLOCK"
-            echo -n 'lastPrice='; cast call $PROTOCOL 'getLastPrice()(uint128)' --block $BLOCK --rpc-url $RPC || true
-            echo -n 'totalExpo='; cast call $PROTOCOL 'getTotalExpo()(uint256)' --block $BLOCK --rpc-url $RPC || true
-            echo -n 'balanceLong='; cast call $PROTOCOL 'getBalanceLong()(uint256)' --block $BLOCK --rpc-url $RPC || true
-            echo -n 'balanceVault='; cast call $PROTOCOL 'getBalanceVault()(uint256)' --block $BLOCK --rpc-url $RPC || true
-            echo -n 'positions='; cast call $PROTOCOL 'getTotalLongPositions()(uint256)' --block $BLOCK --rpc-url $RPC || true
-            echo -n 'highestTick='; cast call $PROTOCOL 'getHighestPopulatedTick()(int24)' --block $BLOCK --rpc-url $RPC || true
-            echo -n 'accumulator='; cast call $PROTOCOL 'getLiqMultiplierAccumulator()((uint256,uint256))' --block $BLOCK --rpc-url $RPC || true
+            echo -n 'lastPrice='; call_at "$RPC" 'getLastPrice()(uint128)' "$BLOCK"
+            echo -n 'totalExpo='; call_at "$RPC" 'getTotalExpo()(uint256)' "$BLOCK"
+            echo -n 'balanceLong='; call_at "$RPC" 'getBalanceLong()(uint256)' "$BLOCK"
+            echo -n 'balanceVault='; call_at "$RPC" 'getBalanceVault()(uint256)' "$BLOCK"
+            echo -n 'positions='; call_at "$RPC" 'getTotalLongPositions()(uint256)' "$BLOCK"
+            echo -n 'highestTick='; call_at "$RPC" 'getHighestPopulatedTick()(int24)' "$BLOCK"
+            echo -n 'accumulator='; call_at "$RPC" 'getLiqMultiplierAccumulator()((uint256,uint256))' "$BLOCK"
           }
 
           for RPC in \
             https://rpcfree.com/ethereum-rpc \
-            https://ethereum-rpc.blockreq.com/v1/rpc/public \
-            https://public.1rpc.io/eth \
-            https://ethereum-rpc.publicnode.com
+            https://ethereum-rpc.blockreq.com/v1/rpc/public
           do
             echo "===== RPC $RPC ====="
-            echo '=== old one-tick historical transaction ==='
-            dump_state "$RPC" $((OLD_BLOCK-1))
-            dump_state "$RPC" $OLD_BLOCK
-            echo '-- old receipt status'
-            cast receipt $OLD_TX --json --rpc-url $RPC 2>/dev/null | jq -r '.status,.blockNumber' || true
-
-            echo '=== June 2026 real TWO-TICK liquidation ==='
+            echo '=== immediately before real TWO-TICK tx ==='
             dump_state "$RPC" $((TWO_BLOCK-1))
+            echo '=== after real TWO-TICK tx block ==='
             dump_state "$RPC" $TWO_BLOCK
-            echo '-- two-tick receipt status'
-            cast receipt $TWO_TX --json --rpc-url $RPC 2>/dev/null | jq -r '.status,.blockNumber' || true
+            echo '=== older control block ==='
+            dump_state "$RPC" $((OLD_BLOCK-1))
           done
