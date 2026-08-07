@@ -29,6 +29,8 @@ jobs:
       - name: Install deps
         run: npm ci && forge soldeer install
 
+      # Red phase was recorded before the source fix: the next two regressions
+      # failed with InvalidLongExpo / exact 1-wei residue on vulnerable v1.0.0.
       - name: Run ordinary-only rounding regression
         run: forge test --match-contract TestLiquidationRoundingOrdinaryPositions -vvv
 
