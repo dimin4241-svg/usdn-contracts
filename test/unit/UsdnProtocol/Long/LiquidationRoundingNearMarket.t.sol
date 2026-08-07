@@ -37,9 +37,6 @@ contract TestLiquidationRoundingNearMarket is UsdnProtocolBaseFixture {
         vm.deal(USER_B, 10 ether);
         super._setUp(params);
 
-        // Public liquidation in MockOracleMiddleware is timestamped ~30 seconds
-        // behind block.timestamp. Two validation delays make the observation
-        // strictly newer than initialize()'s last accounting timestamp.
         _waitDelay();
         _waitDelay();
         protocol.liquidate(abi.encode(BOOTSTRAP_LIQ_PRICE));
@@ -47,9 +44,6 @@ contract TestLiquidationRoundingNearMarket is UsdnProtocolBaseFixture {
         assertEq(protocol.getTotalExpo(), 0, "bootstrap exposure must be gone");
         assertEq(protocol.getBalanceLong(), 0, "bootstrap balance must be gone");
 
-        // Move the protocol's accounting price back to the intended entry
-        // market through the normal public price-update/liquidation path before
-        // requesting near-market liquidation prices on new user positions.
         _waitDelay();
         _waitDelay();
         protocol.liquidate(abi.encode(ENTRY_PRICE));
@@ -69,23 +63,22 @@ contract TestLiquidationRoundingNearMarket is UsdnProtocolBaseFixture {
                 user: USER_B,
                 untilAction: ProtocolAction.ValidateOpenPosition,
                 positionSize: 2 ether,
-                desiredLiqPrice: 1790 ether,
+                desiredLiqPrice: 1750 ether,
                 price: ENTRY_PRICE
             })
         );
 
+        console2.log("ordinary tick A", int256(posA.tick));
+        console2.log("ordinary tick B", int256(posB.tick));
         assertNotEq(posA.tick, posB.tick, "two ordinary positions need different ticks");
         assertEq(protocol.getTotalLongPositions(), 2, "only post-bootstrap ordinary positions remain");
         _waitDelay();
     }
 
-    /// @dev Diagnostic scan. Each candidate starts from exactly the same state.
-    /// The test deliberately does not assert a particular candidate; the logs
-    /// identify whether a nearby final price produces the invariant violation.
     function test_probeNearMarketPrices() public {
         uint256 initialSnapshot = vm.snapshotState();
 
-        for (uint256 price = 1720; price <= 1810; price += 2) {
+        for (uint256 price = 1650; price <= 1790; ++price) {
             vm.revertToState(initialSnapshot);
             initialSnapshot = vm.snapshotState();
 
@@ -97,14 +90,11 @@ contract TestLiquidationRoundingNearMarket is UsdnProtocolBaseFixture {
             uint256 positions = protocol.getTotalLongPositions();
             uint256 expo = protocol.getTotalExpo();
             uint256 longBalance = protocol.getBalanceLong();
-            if (positions == 0) {
-                console2.log("candidate price", price);
+            if (positions == 0 && longBalance > expo) {
+                console2.log("BROKEN INVARIANT AT", price);
                 console2.log("totalExpo", expo);
                 console2.log("balanceLong", longBalance);
-                if (longBalance > expo) {
-                    console2.log("BROKEN INVARIANT AT", price);
-                    return;
-                }
+                return;
             }
         }
 
