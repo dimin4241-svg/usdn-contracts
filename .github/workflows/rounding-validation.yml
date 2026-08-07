@@ -45,3 +45,6 @@ jobs:
 
       - name: Run public liquidation action tests
         run: forge test --match-path test/unit/UsdnProtocol/Actions/Liquidation.t.sol -vvv
+
+      - name: Run full USDN protocol unit suite
+        run: forge test --match-path 'test/unit/UsdnProtocol/**/*.t.sol' -vv
