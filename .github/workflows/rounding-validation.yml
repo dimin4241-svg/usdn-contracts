@@ -12,6 +12,9 @@ jobs:
   rounding-harness:
     runs-on: ubuntu-latest
     steps:
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -28,6 +31,9 @@ jobs:
 
       - name: Install deps
         run: npm ci && forge soldeer install
+
+      - name: Build upstream test_utils
+        run: cargo build --release
 
       # Red phase was recorded before the source fix: the next two regressions
       # failed with InvalidLongExpo / exact 1-wei residue on vulnerable v1.0.0.
