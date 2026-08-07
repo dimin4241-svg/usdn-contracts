@@ -3,7 +3,7 @@ name: USDN rounding validation
 on:
   push:
     branches:
-      - security/usdn-rounding-ordinary-positions
+      - security/usdn-rounding-fix
 
 permissions:
   contents: read
@@ -29,5 +29,5 @@ jobs:
       - name: Install deps
         run: npm ci && forge soldeer install
 
-      - name: Trace ordinary-position harness
-        run: forge test --match-contract TestLiquidationRoundingOrdinaryPositions -vvvv
+      - name: Run ordinary-position fix regression
+        run: forge test --match-contract TestLiquidationRoundingOrdinaryPositions -vvv
