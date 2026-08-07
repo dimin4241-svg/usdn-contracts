@@ -1,22 +1,24 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.26;
 
-import { DEPLOYER } from "../../../utils/Constants.sol";
 import { UsdnProtocolBaseFixture } from "../utils/Fixtures.sol";
 import { IRebalancer } from "../../../../src/interfaces/Rebalancer/IRebalancer.sol";
 
 /// @notice Stronger reachability control for the multi-tick liquidation rounding
-/// issue: the bootstrap position is first closed through the normal user action
-/// path, then the vulnerable final ticks are created only by ordinary opens.
+/// issue. The initialize()-created bootstrap position is first removed by a
+/// normal single-tick public liquidation. The later dangerous final batch then
+/// contains only positions created through ordinary initiate/validate opens.
 contract TestLiquidationRoundingOrdinaryPositions is UsdnProtocolBaseFixture {
     uint128 internal constant ENTRY_PRICE = 2000 ether;
-    uint128 internal constant CRASH_PRICE = 990 ether;
+    uint128 internal constant BOOTSTRAP_LIQ_PRICE = 980 ether;
+    uint128 internal constant FINAL_CRASH_PRICE = 870 ether;
 
-    address internal constant LARGE_USER = address(0xCAFE);
-    address internal constant SMALL_USER = address(0xBEEF);
+    address internal constant USER_A = address(0xCAFE);
+    address internal constant USER_B = address(0xBEEF);
 
-    PositionId internal largePos;
-    PositionId internal smallPos;
+    PositionId internal posA;
+    PositionId internal posB;
+    int24 internal bootstrapTick;
 
     function setUp() public {
         params = DEFAULT_PARAMS;
@@ -32,104 +34,69 @@ contract TestLiquidationRoundingOrdinaryPositions is UsdnProtocolBaseFixture {
         params.flags.enableRebalancer = true;
         params.flags.enableLiquidationRewards = true;
 
-        vm.deal(DEPLOYER, 10 ether);
-        vm.deal(LARGE_USER, 10 ether);
-        vm.deal(SMALL_USER, 10 ether);
+        vm.deal(USER_A, 10 ether);
+        vm.deal(USER_B, 10 ether);
 
         super._setUp(params);
+        bootstrapTick = initialPosition.tick;
 
-        // Remove the special initialize()-created long using exactly the same
-        // initiate/validate close path available to its owner.
-        (Position memory bootstrap,) = protocol.getLongPosition(initialPosition);
-        assertEq(bootstrap.user, DEPLOYER, "bootstrap owner");
-        assertEq(bootstrap.amount, 200 ether, "bootstrap amount");
-
-        // Cache before vm.prank: a one-shot prank would otherwise be consumed
-        // by the external getter used to evaluate the call value.
-        uint256 securityDeposit = protocol.getSecurityDepositValue();
-        vm.prank(DEPLOYER);
-        protocol.initiateClosePosition{ value: securityDeposit }(
-            initialPosition,
-            bootstrap.amount,
-            DISABLE_MIN_PRICE,
-            DEPLOYER,
-            payable(DEPLOYER),
-            type(uint256).max,
-            abi.encode(ENTRY_PRICE),
-            EMPTY_PREVIOUS_DATA,
-            ""
-        );
-        _waitDelay();
-        vm.prank(DEPLOYER);
-        protocol.validateClosePosition(payable(DEPLOYER), abi.encode(ENTRY_PRICE), EMPTY_PREVIOUS_DATA);
-        _waitDelay();
-
-        assertEq(protocol.getTotalExpo(), 0, "bootstrap exposure must be gone");
-        assertEq(protocol.getBalanceLong(), 0, "bootstrap long balance must be gone");
-
-        // Re-create approximately the same balanced economic state exclusively
-        // with ordinary user positions. Desired liquidation prices are adjacent
-        // so the two populated ticks are liquidated together near $990.
-        largePos = setUpUserPositionInLong(
+        // Two minimum-size ordinary positions at materially lower liquidation
+        // prices. They are small enough to fit the production open-imbalance
+        // limit while the large bootstrap position still exists.
+        posA = setUpUserPositionInLong(
             OpenParams({
-                user: LARGE_USER,
-                untilAction: ProtocolAction.ValidateOpenPosition,
-                positionSize: 200 ether,
-                desiredLiqPrice: 1010 ether,
-                price: ENTRY_PRICE
-            })
-        );
-
-        smallPos = setUpUserPositionInLong(
-            OpenParams({
-                user: SMALL_USER,
+                user: USER_A,
                 untilAction: ProtocolAction.ValidateOpenPosition,
                 positionSize: 2 ether,
-                desiredLiqPrice: 1000 ether,
+                desiredLiqPrice: 900 ether,
+                price: ENTRY_PRICE
+            })
+        );
+        posB = setUpUserPositionInLong(
+            OpenParams({
+                user: USER_B,
+                untilAction: ProtocolAction.ValidateOpenPosition,
+                positionSize: 2 ether,
+                desiredLiqPrice: 890 ether,
                 price: ENTRY_PRICE
             })
         );
 
-        assertNotEq(largePos.tick, smallPos.tick, "ordinary positions need distinct ticks");
-        assertEq(protocol.getTotalExpo() > 0, true, "ordinary exposure must exist");
+        assertGt(bootstrapTick, posA.tick, "bootstrap must liquidate first");
+        assertGt(posA.tick, posB.tick, "ordinary positions need distinct lower ticks");
 
-        // Escrow a real withdrawal before the crash. Closing the bootstrap long
-        // does not burn the initial depositor's USDN balance.
-        uint256 shares = usdn.sharesOf(DEPLOYER) / 20;
-        require(shares > 0 && shares <= type(uint152).max, "invalid shares");
+        // First price move liquidates only the bootstrap tick. Because this is a
+        // one-tick liquidation it cannot create the positive rounding residue.
+        // The two ordinary positions remain alive for the later final batch.
+        protocol.liquidate(abi.encode(BOOTSTRAP_LIQ_PRICE));
 
-        vm.startPrank(DEPLOYER);
-        usdn.approve(address(protocol), type(uint256).max);
-        bool initiated = protocol.initiateWithdrawal{ value: protocol.getSecurityDepositValue() }(
-            uint152(shares),
-            0,
-            DEPLOYER,
-            payable(DEPLOYER),
-            type(uint256).max,
-            abi.encode(ENTRY_PRICE),
-            EMPTY_PREVIOUS_DATA
-        );
-        vm.stopPrank();
-        assertTrue(initiated, "withdrawal initiation");
-        _waitDelay();
+        assertEq(protocol.getTotalLongPositions(), 2, "only the two ordinary positions should remain");
+        assertEq(protocol.getHighestPopulatedTick(), posA.tick, "highest remaining tick must be ordinary");
+        (Position memory a,) = protocol.getLongPosition(posA);
+        (Position memory b,) = protocol.getLongPosition(posB);
+        assertTrue(a.validated && b.validated, "ordinary positions must survive bootstrap liquidation");
     }
 
-    function test_A_onlyOrdinaryPositionsRemain() public view {
-        assertNotEq(largePos.tick, initialPosition.tick, "large normal open should not reuse bootstrap construction");
-        assertNotEq(smallPos.tick, initialPosition.tick, "small normal open should not reuse bootstrap construction");
-        assertNotEq(largePos.tick, smallPos.tick, "two ordinary ticks");
+    function test_A_finalBatchContainsOnlyOrdinaryPositions() public view {
+        assertEq(protocol.getTotalLongPositions(), 2, "ordinary positions only");
+        assertEq(protocol.getHighestPopulatedTick(), posA.tick, "ordinary highest tick");
+        assertNotEq(posA.tick, bootstrapTick, "ordinary A is not bootstrap");
+        assertNotEq(posB.tick, bootstrapTick, "ordinary B is not bootstrap");
     }
 
     function test_B_ordinaryOnlyDedicatedLiquidationReverts() public {
         vm.expectRevert(UsdnProtocolInvalidLongExpo.selector);
-        protocol.liquidate(abi.encode(CRASH_PRICE));
+        protocol.liquidate(abi.encode(FINAL_CRASH_PRICE));
     }
 
+    /// @dev Isolation control: remove only the downstream Rebalancer after the
+    /// bootstrap is already gone, then inspect the accounting state produced by
+    /// liquidating the two ordinary ticks together.
     function test_C_ordinaryOnlySourceStateBreaksInvariantWithoutSink() public {
         vm.prank(managers.setExternalManager);
         protocol.setRebalancer(IRebalancer(address(0)));
 
-        protocol.liquidate(abi.encode(CRASH_PRICE));
+        protocol.liquidate(abi.encode(FINAL_CRASH_PRICE));
 
         assertEq(protocol.getTotalExpo(), 0, "all ordinary exposure removed");
         assertGt(protocol.getBalanceLong(), 0, "positive residue remains");
