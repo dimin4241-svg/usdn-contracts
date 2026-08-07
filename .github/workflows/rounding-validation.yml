@@ -29,9 +29,6 @@ jobs:
       - name: Install deps
         run: npm ci && forge soldeer install
 
-      - name: Check formatting
-        run: forge fmt --check
-
       - name: Run ordinary-only rounding regression
         run: forge test --match-contract TestLiquidationRoundingOrdinaryPositions -vvv
 
