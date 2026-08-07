@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.26;
 
-import { console2 } from "forge-std/src/console2.sol";
+import { console2 } from "forge-std/console2.sol";
 import { UsdnProtocolBaseFixture } from "../utils/Fixtures.sol";
 import { IRebalancer } from "../../../../src/interfaces/Rebalancer/IRebalancer.sol";
 
