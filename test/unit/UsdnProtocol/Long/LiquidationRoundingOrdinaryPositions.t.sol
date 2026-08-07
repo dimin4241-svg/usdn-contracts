@@ -65,6 +65,11 @@ contract TestLiquidationRoundingOrdinaryPositions is UsdnProtocolBaseFixture {
         assertGt(bootstrapTick, posA.tick, "bootstrap must liquidate first");
         assertGt(posA.tick, posB.tick, "ordinary positions need distinct lower ticks");
 
+        // MockOracleMiddleware timestamps public liquidations slightly behind
+        // block.timestamp. Add one more fixture delay so the $980 observation is
+        // strictly newer than the last validation/accounting timestamp.
+        _waitDelay();
+
         // First price move liquidates only the bootstrap tick. Because this is a
         // one-tick liquidation it cannot create the positive rounding residue.
         // The two ordinary positions remain alive for the later final batch.
@@ -75,6 +80,9 @@ contract TestLiquidationRoundingOrdinaryPositions is UsdnProtocolBaseFixture {
         (Position memory a,) = protocol.getLongPosition(posA);
         (Position memory b,) = protocol.getLongPosition(posB);
         assertTrue(a.validated && b.validated, "ordinary positions must survive bootstrap liquidation");
+
+        // Make the later $870 liquidation fresh for the same mock-oracle reason.
+        _waitDelay();
     }
 
     function test_A_finalBatchContainsOnlyOrdinaryPositions() public view {
