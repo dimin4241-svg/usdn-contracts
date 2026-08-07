@@ -11,7 +11,11 @@ import { IRebalancer } from "../../../../src/interfaces/Rebalancer/IRebalancer.s
 contract TestLiquidationRoundingOrdinaryPositions is UsdnProtocolBaseFixture {
     uint128 internal constant ENTRY_PRICE = 2000 ether;
     uint128 internal constant BOOTSTRAP_LIQ_PRICE = 980 ether;
-    uint128 internal constant FINAL_CRASH_PRICE = 870 ether;
+    // Keep the final price inside the narrow window where both ordinary ticks
+    // are liquidatable but their no-penalty values are still positive. The
+    // previous $870 probe put the lower tick into bad debt and therefore tested
+    // a different arithmetic regime.
+    uint128 internal constant FINAL_CRASH_PRICE = 880 ether;
 
     address internal constant USER_A = address(0xCAFE);
     address internal constant USER_B = address(0xBEEF);
@@ -81,7 +85,7 @@ contract TestLiquidationRoundingOrdinaryPositions is UsdnProtocolBaseFixture {
         (Position memory b,) = protocol.getLongPosition(posB);
         assertTrue(a.validated && b.validated, "ordinary positions must survive bootstrap liquidation");
 
-        // Make the later $870 liquidation fresh for the same mock-oracle reason.
+        // Make the later $880 liquidation fresh for the same mock-oracle reason.
         _waitDelay();
     }
 
