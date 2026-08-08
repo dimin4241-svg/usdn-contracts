@@ -24,6 +24,8 @@ jobs:
       - run: npm ci && forge soldeer install
       - name: Run whole-dollar fixed accounting witness
         run: forge test --match-contract TestLiquidationRoundingPostBootstrapWholeDollarFixValidation -vvvv
+      - name: Validate same whole-dollar source gap and fix at 10x collateral scale
+        run: forge test --match-contract TestLiquidationRoundingPostBootstrapScale10xFixValidation -vvvv
       - name: Run fully post-bootstrap fixed withdrawal impact witness
         run: forge test --match-contract TestLiquidationRoundingPostBootstrapFixImpact -vvvv
       - name: Keep upstream Rebalancer invariant tests green
