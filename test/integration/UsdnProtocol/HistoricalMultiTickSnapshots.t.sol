@@ -84,75 +84,70 @@ contract TestHistoricalMultiTickSnapshots is Test {
         }
     }
 
+    function _scanBoundary(int24 boundaryTick, uint256 expectedEligible, uint256 liquidationBlock)
+        internal
+        returns (bool hit_, uint256 finalBatchSize_, uint256 cumulativeTicks_)
+    {
+        uint256 boundary = protocol.getEffectivePriceForTick(boundaryTick);
+        uint256 price = boundary > 1 ? boundary - 1 : boundary;
+
+        for (uint256 batch; batch < 8; ++batch) {
+            (bool ok, bytes4 sel, Types.LiqTickInfo[] memory removed) = _callLiquidate(price);
+            if (!ok) {
+                if (sel == IUsdnProtocolErrors.UsdnProtocolInvalidLongExpo.selector) {
+                    console2.log("*** HISTORICAL PRODUCTION INVALID_LONG_EXPO HIT ***");
+                    console2.log("pre-state block", liquidationBlock - 1);
+                    console2.log("boundary tick", int256(boundaryTick));
+                    console2.log("candidate price", price);
+                    console2.log("initially eligible ticks", expectedEligible);
+                    console2.log("successful ticks before failing batch", cumulativeTicks_);
+                    console2.log("failing batch index", batch);
+                    console2.log("totalExpo before failure", protocol.getTotalExpo());
+                    console2.log("balanceLong before failure", protocol.getBalanceLong());
+                    return (true, finalBatchSize_, cumulativeTicks_);
+                }
+                return (false, finalBatchSize_, cumulativeTicks_);
+            }
+
+            if (removed.length == 0) return (false, finalBatchSize_, cumulativeTicks_);
+            cumulativeTicks_ += removed.length;
+            finalBatchSize_ = removed.length;
+            if (cumulativeTicks_ >= expectedEligible) return (false, finalBatchSize_, cumulativeTicks_);
+        }
+    }
+
     /// @return hit_ True iff a natural public liquidation batch reverted with
     /// UsdnProtocolInvalidLongExpo from this exact production pre-state.
     function _scanSnapshot(uint256 liquidationBlock, uint256 actualRealBatchSize) internal returns (bool hit_) {
         _selectPreState(liquidationBlock);
-
-        uint256 totalPositions = protocol.getTotalLongPositions();
-        int24 highest = protocol.getHighestPopulatedTick();
-        uint256 expo = protocol.getTotalExpo();
-        uint256 longBalance = protocol.getBalanceLong();
         (int24[] memory populated, uint256 tickCount, uint256 countedPositions) = _populatedTicks();
 
         console2.log("SNAPSHOT block", liquidationBlock - 1);
         console2.log("real next-tx batch size", actualRealBatchSize);
-        console2.log("positions", totalPositions);
+        console2.log("positions", protocol.getTotalLongPositions());
         console2.log("populated ticks", tickCount);
-        console2.log("highest tick", int256(highest));
-        console2.log("totalExpo", expo);
-        console2.log("balanceLong", longBalance);
+        console2.log("highest tick", int256(protocol.getHighestPopulatedTick()));
+        console2.log("totalExpo", protocol.getTotalExpo());
+        console2.log("balanceLong", protocol.getBalanceLong());
 
-        assertEq(countedPositions, totalPositions, "failed to enumerate snapshot positions");
+        assertEq(countedPositions, protocol.getTotalLongPositions(), "failed to enumerate snapshot positions");
         if (tickCount < 2) return false;
 
         uint256 rootSnapshot = vm.snapshotState();
         bool exercised2;
         bool exercised3Plus;
 
-        // Every live populated tick boundary is a discontinuity in the set of
-        // liquidatable ticks. Testing one wei below each boundary covers every
-        // possible initial set of liquidatable populated ticks at this state.
+        // One wei below every populated-tick boundary covers every discontinuity
+        // in the initial liquidatable tick set at this exact production state.
         for (uint256 j = 1; j < tickCount; ++j) {
             vm.revertToState(rootSnapshot);
             rootSnapshot = vm.snapshotState();
 
-            int24 boundaryTick = populated[j];
-            uint256 boundary = protocol.getEffectivePriceForTick(boundaryTick);
-            uint256 price = boundary > 1 ? boundary - 1 : boundary;
-            uint256 expectedEligible = j + 1;
-            uint256 cumulativeTicks;
-            uint256 finalBatchSize;
+            (bool hit, uint256 finalBatchSize, uint256 liquidated) =
+                _scanBoundary(populated[j], j + 1, liquidationBlock);
+            if (hit) return true;
 
-            // Historical snapshots observed here contain far fewer than 80
-            // populated ticks, so eight public batches cover the maximum path.
-            for (uint256 batch; batch < 8; ++batch) {
-                (bool ok, bytes4 sel, Types.LiqTickInfo[] memory removed) = _callLiquidate(price);
-                if (!ok) {
-                    if (sel == IUsdnProtocolErrors.UsdnProtocolInvalidLongExpo.selector) {
-                        console2.log("*** HISTORICAL PRODUCTION INVALID_LONG_EXPO HIT ***");
-                        console2.log("pre-state block", liquidationBlock - 1);
-                        console2.log("boundary tick", int256(boundaryTick));
-                        console2.log("candidate price", price);
-                        console2.log("initially eligible ticks", expectedEligible);
-                        console2.log("successful ticks before failing batch", cumulativeTicks);
-                        console2.log("failing batch index", batch);
-                        console2.log("totalExpo before failure", protocol.getTotalExpo());
-                        console2.log("balanceLong before failure", protocol.getBalanceLong());
-                        return true;
-                    }
-                    // A different protocol check means this boundary is not a
-                    // valid witness for this finding; do not misclassify it.
-                    break;
-                }
-
-                if (removed.length == 0) break;
-                cumulativeTicks += removed.length;
-                finalBatchSize = removed.length;
-                if (cumulativeTicks >= expectedEligible) break;
-            }
-
-            if (cumulativeTicks == expectedEligible) {
+            if (liquidated == j + 1) {
                 if (finalBatchSize == 2) exercised2 = true;
                 if (finalBatchSize >= 3) exercised3Plus = true;
             }
@@ -164,38 +159,16 @@ contract TestHistoricalMultiTickSnapshots is Test {
         return false;
     }
 
-    // Real multi-tick transactions discovered from the protocol's complete
-    // LiquidatedTick event history scan. The first three are a particularly
-    // valuable early sequence: 2, then 4, then 6 ticks within ~100 blocks.
-    function test_A_block21762803_real2TickSnapshot() public {
-        _scanSnapshot(21_762_803, 2);
-    }
-
-    function test_B_block21762859_real4TickSnapshot() public {
-        _scanSnapshot(21_762_859, 4);
-    }
-
-    function test_C_block21762906_real6TickSnapshot() public {
-        _scanSnapshot(21_762_906, 6);
-    }
-
-    function test_D_block21921846_real2TickSnapshot() public {
-        _scanSnapshot(21_921_846, 2);
-    }
-
-    function test_E_block22018393_real2TickSnapshot() public {
-        _scanSnapshot(22_018_393, 2);
-    }
-
-    function test_F_block22211357_real2TickSnapshot() public {
-        _scanSnapshot(22_211_357, 2);
-    }
-
-    function test_G_block23416674_real2TickSnapshot() public {
-        _scanSnapshot(23_416_674, 2);
-    }
-
-    function test_H_block25240929_real2TickSnapshot() public {
-        _scanSnapshot(25_240_929, 2);
-    }
+    // Real multi-tick transactions discovered from on-chain LiquidatedTick
+    // history. The first three are an early 2 -> 4 -> 6 tick sequence within
+    // roughly one hundred blocks.
+    function test_A_block21762803_real2TickSnapshot() public { _scanSnapshot(21_762_803, 2); }
+    function test_B_block21762859_real4TickSnapshot() public { _scanSnapshot(21_762_859, 4); }
+    function test_C_block21762906_real6TickSnapshot() public { _scanSnapshot(21_762_906, 6); }
+    function test_D_block21921846_real2TickSnapshot() public { _scanSnapshot(21_921_846, 2); }
+    function test_E_block22018393_real2TickSnapshot() public { _scanSnapshot(22_018_393, 2); }
+    function test_F_block22211357_real2TickSnapshot() public { _scanSnapshot(22_211_357, 2); }
+    function test_G_block23416674_real2TickSnapshot() public { _scanSnapshot(23_416_674, 2); }
+    function test_H_block24391513_real2TickSnapshot() public { _scanSnapshot(24_391_513, 2); }
+    function test_I_block25240929_real2TickSnapshot() public { _scanSnapshot(25_240_929, 2); }
 }
