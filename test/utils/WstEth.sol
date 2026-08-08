@@ -38,6 +38,11 @@ contract WstETH is ERC20, ERC20Permit, IWstETH {
         return _stEthPerToken;
     }
 
+    /// @dev Test-only setter used to model the real monotonic wstETH/stETH exchange-rate drift over time.
+    function setStEthPerToken(uint256 newStEthPerToken) external {
+        _stEthPerToken = newStEthPerToken;
+    }
+
     /**
      * @notice Get the amount of wstETH for one stETH token
      * @return Amount of wstETH for one stETH token
