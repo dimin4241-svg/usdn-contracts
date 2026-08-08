@@ -17,7 +17,7 @@ jobs:
           submodules: recursive
       - uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: nightly
+          version: nightly-50dd4b8accae878391b0825885f0632d1e0a1e4c
       - uses: actions/setup-node@v4
         with:
           node-version: 20
