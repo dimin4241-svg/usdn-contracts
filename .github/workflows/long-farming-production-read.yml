@@ -37,3 +37,19 @@ jobs:
           cast call "$FARMING_RANGE" 'currentEndBlock(uint256)(uint256)' 20 --rpc-url "$RPC_URL"
           cast call "$FARMING_RANGE" 'rewardInfoLen(uint256)(uint256)' 20 --rpc-url "$RPC_URL"
           cast call "$FARMING_RANGE" 'pendingReward(uint256,address)(uint256)' 20 "$LONG_FARMING" --rpc-url "$RPC_URL"
+
+          echo '=== campaign 20 reward schedule ==='
+          for i in 0 1 2 3 4 5 6; do
+            echo "rewardInfo[$i]"
+            cast call "$FARMING_RANGE" 'campaignRewardInfo(uint256,uint256)(uint256,uint256)' 20 "$i" --rpc-url "$RPC_URL"
+          done
+
+          echo '=== schedule boundary block timestamps ==='
+          START=$(cast call "$FARMING_RANGE" 'campaignInfo(uint256)(address,address,uint256,uint256,uint256,uint256,uint256)' 20 --rpc-url "$RPC_URL" | sed -n '3p' | awk '{print $1}')
+          echo "campaignStartBlock=$START"
+          cast block "$START" --field timestamp --rpc-url "$RPC_URL"
+          for i in 0 1 2 3 4 5 6; do
+            END=$(cast call "$FARMING_RANGE" 'campaignRewardInfo(uint256,uint256)(uint256,uint256)' 20 "$i" --rpc-url "$RPC_URL" | sed -n '1p' | awk '{print $1}')
+            echo "rewardInfo[$i].endBlock=$END"
+            cast block "$END" --field timestamp --rpc-url "$RPC_URL"
+          done
