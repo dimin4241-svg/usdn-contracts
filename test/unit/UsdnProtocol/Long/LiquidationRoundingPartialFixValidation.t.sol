@@ -204,4 +204,33 @@ contract TestLiquidationRoundingPartialFixValidation is UsdnProtocolBaseFixture 
             "partial multi-tick batch left latent long-balance rounding drift"
         );
     }
+
+    function testFuzz_E_partialBatchArbitraryPriceLeavesNoLatentDrift(uint128 rawPrice) public {
+        // The coarse-dollar witness above addresses oracle realism. This second search removes
+        // that restriction and adversarially samples the full 18-decimal interval between
+        // C's and B's liquidation boundaries. If independent per-tick flooring can leave a
+        // hidden balance error while the global `balanceLong <= totalExpo` invariant still
+        // holds, this assertion should expose it.
+        uint128 price = uint128(bound(uint256(rawPrice), 1720 ether, 1736 ether));
+
+        vm.prank(managers.setExternalManager);
+        protocol.setRebalancer(IRebalancer(address(0)));
+
+        Types.LiqTickInfo[] memory ticks = protocol.liquidate(abi.encode(price));
+        assertEq(ticks.length, 2, "arbitrary price must liquidate exactly A+B");
+        assertEq(protocol.getTotalLongPositions(), 1, "C must remain");
+
+        (Types.Position memory remaining,) = protocol.getLongPosition(posC);
+        int24 tickWithoutPenalty = protocol.i_calcTickWithoutPenalty(posC.tick);
+        uint256 liqPriceWithoutPenalty = protocol.getEffectivePriceForTick(tickWithoutPenalty);
+        int256 independentValue =
+            protocol.i_positionValue(remaining.totalExpo, price, uint128(liqPriceWithoutPenalty));
+
+        assertGt(independentValue, 0, "C value remains positive");
+        assertEq(
+            protocol.getBalanceLong(),
+            uint256(independentValue),
+            "18-decimal partial batch left latent long-balance rounding drift"
+        );
+    }
 }
