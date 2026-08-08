@@ -10,18 +10,47 @@ permissions:
 
 jobs:
   scan:
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - label: b216-b221
+            start: 21600000
+            end: 22199999
+          - label: b222-b227
+            start: 22200000
+            end: 22799999
+          - label: b228-b233
+            start: 22800000
+            end: 23399999
+          - label: b234-b239
+            start: 23400000
+            end: 23999999
+          - label: b240-b245
+            start: 24000000
+            end: 24599999
+          - label: b246-b251
+            start: 24600000
+            end: 25199999
+          - label: b252-b257
+            start: 25200000
+            end: 25710000
     runs-on: ubuntu-latest
+    name: scan-${{ matrix.label }}
     steps:
       - uses: actions/checkout@v4
       - name: Scan LiquidatedTick events and group multi-tick transactions
         shell: bash
+        env:
+          START: ${{ matrix.start }}
+          END: ${{ matrix.end }}
+          LABEL: ${{ matrix.label }}
         run: |
           set -euo pipefail
           RPC=https://eth.drpc.org
           PROTOCOL=0x656cb8c6d154aad29d8771384089be5b5141f01a
           TOPIC=0xb64624ffaac1b0226fccb859570380e00ddef038d67b89cd781c6fac2703a9a7
-          START=21600000
-          END=25710000
           CHUNK=10000
           : > /tmp/liqs.jsonl
 
@@ -30,17 +59,27 @@ jobs:
             FH=$(printf '0x%x' "$FROM"); TH=$(printf '0x%x' "$TO")
             PAYLOAD=$(jq -nc --arg a "$PROTOCOL" --arg f "$FH" --arg t "$TH" --arg topic "$TOPIC" \
               '{jsonrpc:"2.0",id:1,method:"eth_getLogs",params:[{address:$a,fromBlock:$f,toBlock:$t,topics:[$topic]}]}')
-            RESP=$(curl -sS --max-time 25 -H 'content-type: application/json' --data "$PAYLOAD" "$RPC")
-            if [ "$(echo "$RESP" | jq -r 'has("result")')" != true ]; then
-              echo "RPC error for $FROM-$TO: $(echo "$RESP" | jq -c '.error // .')"
+
+            OK=false
+            for ATTEMPT in 1 2 3 4; do
+              RESP=$(curl -sS --max-time 25 -H 'content-type: application/json' --data "$PAYLOAD" "$RPC" || true)
+              if [ -n "$RESP" ] && [ "$(echo "$RESP" | jq -r 'has("result")' 2>/dev/null || echo false)" = true ]; then
+                echo "$RESP" | jq -c '.result[]' >> /tmp/liqs.jsonl
+                OK=true
+                break
+              fi
+              echo "retry $ATTEMPT for $FROM-$TO: $(echo "$RESP" | jq -c '.error // .' 2>/dev/null || echo '<invalid response>')"
+              sleep $((ATTEMPT * 2))
+            done
+            if [ "$OK" != true ]; then
+              echo "FAILED RANGE $FROM-$TO after retries"
               exit 1
             fi
-            echo "$RESP" | jq -c '.result[]' >> /tmp/liqs.jsonl
-            sleep 0.05
+            sleep 0.12
           done
 
           TOTAL=$(wc -l < /tmp/liqs.jsonl | tr -d ' ')
-          echo "total LiquidatedTick events=$TOTAL"
+          echo "SEGMENT=$LABEL total LiquidatedTick events=$TOTAL"
 
           jq -s '
             sort_by(.transactionHash)
@@ -50,15 +89,12 @@ jobs:
                 block: .[0].blockNumber,
                 count: length,
                 ticks: map(.topics[1]),
-                versions: map(.topics[2]),
                 data: map(.data)
               })
             | sort_by(.block)
           ' /tmp/liqs.jsonl > /tmp/multi.json
 
           COUNT=$(jq 'length' /tmp/multi.json)
-          echo "multi-tick transactions=$COUNT"
-          cat /tmp/multi.json
-
-          echo '--- concise ---'
+          echo "SEGMENT=$LABEL multi-tick transactions=$COUNT"
+          echo '--- concise multi-tick transactions ---'
           jq -r '.[] | [.block,.count,.tx,(.ticks|join(","))] | @tsv' /tmp/multi.json
