@@ -125,7 +125,8 @@ contract TestHistoricalMainnetLiquidationReachability is Test {
         assertEq(protocol.getHighestPopulatedTick(), populated[2], "two highest historical ticks were not removed");
 
         console2.log("real price reproduced two-tick batch");
-        console2.log("removed top ticks", int256(populated[0]), int256(populated[1]));
+        console2.log("removed top tick0", int256(populated[0]));
+        console2.log("removed top tick1", int256(populated[1]));
         console2.log("new highest tick", int256(protocol.getHighestPopulatedTick()));
         console2.log("tick0 remaining collateral", ticks[0].remainingCollateral);
         console2.log("tick1 remaining collateral", ticks[1].remainingCollateral);
