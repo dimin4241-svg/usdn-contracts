@@ -33,4 +33,4 @@ jobs:
       - name: Existing production-config regression
         run: forge test --match-contract TestLiquidationRoundingProductionInvariant -vvvv
       - name: Upstream Rebalancer invariant suite
-        run: forge test --match-contract TestUsdnProtocolActionsRebalancer -vvvv
+        run: forge test --match-path 'test/unit/UsdnProtocol/Long/_TriggerRebalancer.t.sol' -vvvv
