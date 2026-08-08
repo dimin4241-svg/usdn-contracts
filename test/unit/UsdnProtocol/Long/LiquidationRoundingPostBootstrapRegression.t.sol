@@ -29,8 +29,11 @@ contract TestLiquidationRoundingPostBootstrapRegression is UsdnProtocolBaseFixtu
 
     uint256 internal constant EXPECTED_A_EXPO = 12_675_520_241_288_472_878;
     uint256 internal constant EXPECTED_B_EXPO = 12_034_709_889_783_951_966;
+    uint256 internal constant EXPECTED_A_PRICE_WITHOUT_PENALTY = 1_684_916_553_638_498_409_790;
+    uint256 internal constant EXPECTED_B_PRICE_WITHOUT_PENALTY = 1_668_152_187_831_301_125_432;
     int256 internal constant EXPECTED_A_REMAINING = 126_802_320_177_930_074;
     int256 internal constant EXPECTED_B_REMAINING = 238_935_382_547_897_344;
+    int256 internal constant EXPECTED_TEMP_LONG_BALANCE = 365_737_702_725_827_419;
 
     address internal constant SUPPORT_USER = address(0xCAFE);
     address internal constant USER_A = address(0xBEEF);
@@ -186,5 +189,23 @@ contract TestLiquidationRoundingPostBootstrapRegression is UsdnProtocolBaseFixtu
 
         assertEq(protocol.getTotalLongPositions(), 2, "revert must roll final liquidation back");
         assertEq(protocol.getHighestPopulatedTick(), EXPECTED_A_TICK, "revert must preserve highest tick");
+    }
+
+    /// @dev Independent arithmetic control. PnL/funding establishes the exact
+    /// temporary long balance before liquidation. The two tick values are then
+    /// recomputed here with the source formula using separate floor divisions,
+    /// without invoking `_tickValue` or the liquidation loop.
+    function test_D_independentFloorSumLeavesExactlyOneWei() public {
+        Types.ApplyPnlAndFundingData memory pnl = protocol.i_applyPnlAndFunding(finalPrice, uint128(block.timestamp));
+        assertEq(pnl.tempLongBalance, EXPECTED_TEMP_LONG_BALANCE, "pre-liquidation temp long balance");
+
+        uint256 price = uint256(finalPrice);
+        uint256 valueA = EXPECTED_A_EXPO * (price - EXPECTED_A_PRICE_WITHOUT_PENALTY) / price;
+        uint256 valueB = EXPECTED_B_EXPO * (price - EXPECTED_B_PRICE_WITHOUT_PENALTY) / price;
+
+        assertEq(valueA, uint256(EXPECTED_A_REMAINING), "independent tick A floor");
+        assertEq(valueB, uint256(EXPECTED_B_REMAINING), "independent tick B floor");
+        assertEq(valueA + valueB, uint256(EXPECTED_TEMP_LONG_BALANCE) - 1, "floor-sum must miss one wei");
+        assertEq(uint256(EXPECTED_TEMP_LONG_BALANCE) - valueA - valueB, 1, "exact arithmetic residue");
     }
 }
