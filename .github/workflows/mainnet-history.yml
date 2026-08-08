@@ -18,7 +18,7 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: nightly
-      - name: Probe archive state before real two-tick liquidation
+      - name: Probe public archive providers at real two-tick liquidation
         shell: bash
         run: |
           set -u
@@ -29,16 +29,16 @@ jobs:
           one () {
             local RPC=$1 LABEL=$2 SIG=$3 BLOCK=$4
             local OUT
-            OUT=$(timeout 10s cast call "$PROTOCOL" "$SIG" --block "$BLOCK" --rpc-url "$RPC" 2>&1 || true)
+            OUT=$(timeout 15s cast call "$PROTOCOL" "$SIG" --block "$BLOCK" --rpc-url "$RPC" 2>&1 || true)
             OUT=${OUT//$'\n'/ }
-            OUT=${OUT:0:600}
+            OUT=${OUT:0:700}
             if [ -z "$OUT" ]; then OUT='<empty/timeout>'; fi
             echo "::notice title=${LABEL}::${OUT}"
           }
 
           for ENTRY in \
-            'rpcfree|https://rpcfree.com/ethereum-rpc' \
-            'blockreq|https://ethereum-rpc.blockreq.com/v1/rpc/public'
+            'blockpi|https://ethereum.public.blockpi.network/v1/rpc/public' \
+            'drpc|https://eth.drpc.org'
           do
             NAME=${ENTRY%%|*}
             RPC=${ENTRY#*|}
