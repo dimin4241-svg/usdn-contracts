@@ -21,35 +21,32 @@ jobs:
         run: |
           set -u
           PROTOCOL=0x656cB8C6d154Aad29d8771384089be5B5141f01a
-          TWO_BLOCK=25240929
-          OLD_BLOCK=22638958
+          BEFORE=25240928
+          AFTER=25240929
 
-          call_at () {
-            local RPC=$1 SIG=$2 BLOCK=$3
-            timeout 12s cast call "$PROTOCOL" "$SIG" --block "$BLOCK" --rpc-url "$RPC" 2>&1 || true
+          one () {
+            local RPC=$1 LABEL=$2 SIG=$3 BLOCK=$4
+            local OUT
+            OUT=$(timeout 10s cast call "$PROTOCOL" "$SIG" --block "$BLOCK" --rpc-url "$RPC" 2>&1 || true)
+            OUT=$(echo "$OUT" | tr '\n' ' ' | head -c 700)
+            echo "::notice title=${LABEL}::${OUT}"
           }
 
-          dump_state () {
-            local RPC=$1 BLOCK=$2
-            echo "-- state block $BLOCK"
-            echo -n 'lastPrice='; call_at "$RPC" 'getLastPrice()(uint128)' "$BLOCK"
-            echo -n 'totalExpo='; call_at "$RPC" 'getTotalExpo()(uint256)' "$BLOCK"
-            echo -n 'balanceLong='; call_at "$RPC" 'getBalanceLong()(uint256)' "$BLOCK"
-            echo -n 'balanceVault='; call_at "$RPC" 'getBalanceVault()(uint256)' "$BLOCK"
-            echo -n 'positions='; call_at "$RPC" 'getTotalLongPositions()(uint256)' "$BLOCK"
-            echo -n 'highestTick='; call_at "$RPC" 'getHighestPopulatedTick()(int24)' "$BLOCK"
-            echo -n 'accumulator='; call_at "$RPC" 'getLiqMultiplierAccumulator()((uint256,uint256))' "$BLOCK"
-          }
-
-          for RPC in \
-            https://rpcfree.com/ethereum-rpc \
-            https://ethereum-rpc.blockreq.com/v1/rpc/public
+          for ENTRY in \
+            'rpcfree|https://rpcfree.com/ethereum-rpc' \
+            'blockreq|https://ethereum-rpc.blockreq.com/v1/rpc/public'
           do
-            echo "===== RPC $RPC ====="
-            echo '=== immediately before real TWO-TICK tx ==='
-            dump_state "$RPC" $((TWO_BLOCK-1))
-            echo '=== after real TWO-TICK tx block ==='
-            dump_state "$RPC" $TWO_BLOCK
-            echo '=== older control block ==='
-            dump_state "$RPC" $((OLD_BLOCK-1))
+            NAME=${ENTRY%%|*}
+            RPC=${ENTRY#*|}
+            one "$RPC" "$NAME-before-lastPrice" 'getLastPrice()(uint128)' "$BEFORE"
+            one "$RPC" "$NAME-before-totalExpo" 'getTotalExpo()(uint256)' "$BEFORE"
+            one "$RPC" "$NAME-before-balanceLong" 'getBalanceLong()(uint256)' "$BEFORE"
+            one "$RPC" "$NAME-before-balanceVault" 'getBalanceVault()(uint256)' "$BEFORE"
+            one "$RPC" "$NAME-before-positions" 'getTotalLongPositions()(uint256)' "$BEFORE"
+            one "$RPC" "$NAME-before-highestTick" 'getHighestPopulatedTick()(int24)' "$BEFORE"
+            one "$RPC" "$NAME-before-accumulator" 'getLiqMultiplierAccumulator()((uint256,uint256))' "$BEFORE"
+            one "$RPC" "$NAME-after-totalExpo" 'getTotalExpo()(uint256)' "$AFTER"
+            one "$RPC" "$NAME-after-balanceLong" 'getBalanceLong()(uint256)' "$AFTER"
+            one "$RPC" "$NAME-after-positions" 'getTotalLongPositions()(uint256)' "$AFTER"
+            one "$RPC" "$NAME-after-highestTick" 'getHighestPopulatedTick()(int24)' "$AFTER"
           done
