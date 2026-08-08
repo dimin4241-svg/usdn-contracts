@@ -1,0 +1,30 @@
+name: USDN liquidation rounding economic edge validation
+
+on:
+  push:
+    branches:
+      - security/usdn-rounding-fix-economic-edge-validation
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly-50dd4b8accae878391b0825885f0632d1e0a1e4c
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci && forge soldeer install
+      - name: Economic edge-case validation
+        run: forge test --match-contract TestLiquidationRoundingEconomicEdgeValidation -vvvv
+      - name: Upstream Rebalancer invariant suite
+        run: forge test --match-path 'test/unit/UsdnProtocol/Long/_TriggerRebalancer.t.sol' -vvvv
+      - name: Upstream liquidation core suite
+        run: forge test --match-path 'test/unit/UsdnProtocol/Long/_LiquidatePositions.t.sol' -vvvv
