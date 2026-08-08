@@ -24,3 +24,5 @@ jobs:
       - run: npm ci && forge soldeer install
       - name: Verify deterministic whole-dollar post-bootstrap witness
         run: forge test --match-contract TestLiquidationRoundingPostBootstrapWholeDollarRegression -vvvv
+      - name: Probe same whole-dollar witness at 10x collateral scale
+        run: forge test --match-contract TestLiquidationRoundingPostBootstrapScale10x -vvvv
