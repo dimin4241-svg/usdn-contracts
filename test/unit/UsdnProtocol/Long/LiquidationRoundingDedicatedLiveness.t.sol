@@ -2,7 +2,7 @@
 pragma solidity 0.8.26;
 
 import { TestLiquidationRoundingPostBootstrapRegression } from "./LiquidationRoundingPostBootstrapRegression.t.sol";
-import { IRebalancer } from "../../../../src/interfaces/Rebalancer/IRebalancer.sol";
+import { IRebalancer as RebalancerInterface } from "../../../../src/interfaces/Rebalancer/IRebalancer.sol";
 import { IUsdnProtocolTypes as Types } from "../../../../src/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
 
 /// @notice Focused liveness validation for the public dedicated liquidation endpoint.
@@ -63,7 +63,7 @@ contract TestLiquidationRoundingDedicatedLiveness is TestLiquidationRoundingPost
 
     function test_C_isolationControlRemovingOnlyRebalancerLetsSameBatchCommit() public {
         vm.prank(managers.setExternalManager);
-        protocol.setRebalancer(IRebalancer(address(0)));
+        protocol.setRebalancer(RebalancerInterface(address(0)));
 
         Types.LiqTickInfo[] memory ticks = protocol.liquidate(abi.encode(finalPrice));
         assertEq(ticks.length, 2, "same dedicated batch must contain both witness ticks");
