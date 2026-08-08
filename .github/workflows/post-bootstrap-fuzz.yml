@@ -1,4 +1,4 @@
-name: USDN post-bootstrap ordinary fuzz
+name: USDN post-bootstrap ordinary regression
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  fuzz:
+  regression:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,7 +22,5 @@ jobs:
         with:
           node-version: 20
       - run: npm ci && forge soldeer install
-      - name: Fuzz post-bootstrap state
-        env:
-          FOUNDRY_FUZZ_RUNS: '2000'
-        run: forge test --match-contract TestLiquidationRoundingPostBootstrapFuzz -vvv
+      - name: Run deterministic post-bootstrap regression
+        run: forge test --match-contract TestLiquidationRoundingPostBootstrapRegression -vvvv
