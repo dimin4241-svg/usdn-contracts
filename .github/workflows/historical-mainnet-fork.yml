@@ -22,4 +22,4 @@ jobs:
         with:
           node-version: 20
       - run: npm ci && forge soldeer install
-      - run: forge test --match-path 'test/integration/UsdnProtocol/Historical*' -vvv
+      - run: forge test --via-ir --match-path 'test/integration/UsdnProtocol/Historical*' -vvv
