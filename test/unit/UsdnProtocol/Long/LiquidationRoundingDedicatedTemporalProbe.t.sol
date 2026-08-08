@@ -24,6 +24,22 @@ contract TestLiquidationRoundingDedicatedTemporalProbe is TestLiquidationRoundin
         _probeExactInvariantRevert(55 seconds);
     }
 
+    function test_probe_D56_expectExactInvariantRevert() public {
+        _probeExactInvariantRevert(56 seconds);
+    }
+
+    function test_probe_D57_expectExactInvariantRevert() public {
+        _probeExactInvariantRevert(57 seconds);
+    }
+
+    function test_probe_D58_expectExactInvariantRevert() public {
+        _probeExactInvariantRevert(58 seconds);
+    }
+
+    function test_probe_D59_expectExactInvariantRevert() public {
+        _probeExactInvariantRevert(59 seconds);
+    }
+
     function _probeExactInvariantRevert(uint256 shift) internal {
         vm.warp(block.timestamp + shift);
         vm.expectRevert(UsdnProtocolInvalidLongExpo.selector);
