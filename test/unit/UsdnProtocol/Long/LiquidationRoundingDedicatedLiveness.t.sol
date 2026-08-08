@@ -92,8 +92,41 @@ contract TestLiquidationRoundingDedicatedLiveness is TestLiquidationRoundingPost
         _assertTimeShiftedDedicatedRetry(30 seconds);
     }
 
-    function test_D60_dedicatedLiquidationStillRevertsAfterSixtySeconds() public {
-        _assertTimeShiftedDedicatedRetry(60 seconds);
+    /// @dev These intermediate points deliberately accept either of the two causally meaningful outcomes:
+    /// (a) the same two-tick batch reaches the Rebalancer invariant and atomically rolls back, or
+    /// (b) the liquidation set has changed and the endpoint makes real progress. The -vvvv trace tells us which.
+    /// In either case the test proves that there is no third silent/corrupt state transition.
+    function test_D40_characterizeDedicatedLiquidationAfterFortySeconds() public {
+        _characterizeTimeShiftedDedicatedRetry(40 seconds);
+    }
+
+    function test_D45_characterizeDedicatedLiquidationAfterFortyFiveSeconds() public {
+        _characterizeTimeShiftedDedicatedRetry(45 seconds);
+    }
+
+    function test_D50_characterizeDedicatedLiquidationAfterFiftySeconds() public {
+        _characterizeTimeShiftedDedicatedRetry(50 seconds);
+    }
+
+    function test_D55_characterizeDedicatedLiquidationAfterFiftyFiveSeconds() public {
+        _characterizeTimeShiftedDedicatedRetry(55 seconds);
+    }
+
+    /// @dev At +60s the funding-adjusted liquidation threshold moves enough that only the highest witness tick is
+    /// liquidated. That shrinks the dedicated batch from two ticks to one, so the sum-of-per-tick-floors mismatch
+    /// is no longer present and the public endpoint can finally commit progress.
+    function test_D60_dedicatedLiquidationProgressesWhenBatchShrinksToOneTick() public {
+        uint256 positionsBefore = protocol.getTotalLongPositions();
+        uint256 liquidatorAssetBefore = wstETH.balanceOf(address(this));
+
+        vm.warp(block.timestamp + 60 seconds);
+        Types.LiqTickInfo[] memory ticks = protocol.liquidate(abi.encode(finalPrice));
+
+        assertEq(ticks.length, 1, "sixty-second retry should liquidate exactly one tick");
+        assertEq(protocol.getTotalLongPositions(), positionsBefore - 1, "sixty-second retry made wrong progress");
+        assertEq(protocol.getHighestPopulatedTick(), posB.tick, "lower witness tick should remain populated");
+        assertGt(wstETH.balanceOf(address(this)), liquidatorAssetBefore, "successful retry must pay liquidator");
+        assertLe(protocol.getBalanceLong(), protocol.getTotalExpo(), "successful retry must preserve long/expo invariant");
     }
 
     function _assertTimeShiftedDedicatedRetry(uint256 shift) internal {
@@ -125,5 +158,41 @@ contract TestLiquidationRoundingDedicatedLiveness is TestLiquidationRoundingPost
         assertEq(wstETH.balanceOf(address(this)), liquidatorAssetBefore, "time-shift retry paid liquidator");
         assertEq(protocol.getTickVersion(posA.tick), tickAVersionBefore, "time-shift retry changed tick A version");
         assertEq(protocol.getTickVersion(posB.tick), tickBVersionBefore, "time-shift retry changed tick B version");
+    }
+
+    function _characterizeTimeShiftedDedicatedRetry(uint256 shift) internal {
+        uint256 positionsBefore = protocol.getTotalLongPositions();
+        int24 highestBefore = protocol.getHighestPopulatedTick();
+        uint256 expoBefore = protocol.getTotalExpo();
+        uint256 longBalanceBefore = protocol.getBalanceLong();
+        uint256 vaultBalanceBefore = protocol.getBalanceVault();
+        int256 pendingVaultBefore = protocol.getPendingBalanceVault();
+        uint256 pendingFeeBefore = protocol.getPendingProtocolFee();
+        uint256 protocolAssetBefore = wstETH.balanceOf(address(protocol));
+        uint256 liquidatorAssetBefore = wstETH.balanceOf(address(this));
+
+        vm.warp(block.timestamp + shift);
+
+        try protocol.liquidate(abi.encode(finalPrice)) returns (Types.LiqTickInfo[] memory ticks) {
+            assertGt(ticks.length, 0, "successful characterization retry must liquidate at least one tick");
+            assertLt(protocol.getTotalLongPositions(), positionsBefore, "successful characterization retry made no progress");
+            assertGt(wstETH.balanceOf(address(this)), liquidatorAssetBefore, "successful characterization retry paid no reward");
+            assertLe(protocol.getBalanceLong(), protocol.getTotalExpo(), "successful characterization retry broke invariant");
+        } catch (bytes memory reason) {
+            assertEq(
+                keccak256(reason),
+                keccak256(abi.encodeWithSelector(UsdnProtocolInvalidLongExpo.selector)),
+                "characterization retry reverted for unexpected reason"
+            );
+            assertEq(protocol.getTotalLongPositions(), positionsBefore, "reverted characterization changed position count");
+            assertEq(protocol.getHighestPopulatedTick(), highestBefore, "reverted characterization changed highest tick");
+            assertEq(protocol.getTotalExpo(), expoBefore, "reverted characterization changed total exposure");
+            assertEq(protocol.getBalanceLong(), longBalanceBefore, "reverted characterization changed long balance");
+            assertEq(protocol.getBalanceVault(), vaultBalanceBefore, "reverted characterization changed vault balance");
+            assertEq(protocol.getPendingBalanceVault(), pendingVaultBefore, "reverted characterization changed pending vault");
+            assertEq(protocol.getPendingProtocolFee(), pendingFeeBefore, "reverted characterization changed pending fee");
+            assertEq(wstETH.balanceOf(address(protocol)), protocolAssetBefore, "reverted characterization changed assets");
+            assertEq(wstETH.balanceOf(address(this)), liquidatorAssetBefore, "reverted characterization paid liquidator");
+        }
     }
 }
