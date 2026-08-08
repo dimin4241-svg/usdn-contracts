@@ -22,6 +22,18 @@ jobs:
         with:
           node-version: 20
       - run: npm ci && forge soldeer install
+      - name: Probe +40s exact invariant revert
+        continue-on-error: true
+        run: forge test --match-contract TestLiquidationRoundingDedicatedTemporalProbe --match-test test_probe_D40_expectExactInvariantRevert -vv
+      - name: Probe +45s exact invariant revert
+        continue-on-error: true
+        run: forge test --match-contract TestLiquidationRoundingDedicatedTemporalProbe --match-test test_probe_D45_expectExactInvariantRevert -vv
+      - name: Probe +50s exact invariant revert
+        continue-on-error: true
+        run: forge test --match-contract TestLiquidationRoundingDedicatedTemporalProbe --match-test test_probe_D50_expectExactInvariantRevert -vv
+      - name: Probe +55s exact invariant revert
+        continue-on-error: true
+        run: forge test --match-contract TestLiquidationRoundingDedicatedTemporalProbe --match-test test_probe_D55_expectExactInvariantRevert -vv
       - name: Run dedicated liquidation liveness regression
         run: forge test --match-contract TestLiquidationRoundingDedicatedLiveness -vvvv
       - name: Run source post-bootstrap rounding regression
