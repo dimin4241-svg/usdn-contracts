@@ -119,7 +119,7 @@ contract TestLiquidationRoundingPostBootstrapThreeTickFixValidation is UsdnProto
     function test_A_sourceArithmeticStillContainsExactTwoWeiGap() public {
         uint128 oracleTimestamp = uint128(block.timestamp - 30 seconds);
         Types.ApplyPnlAndFundingData memory pnl = protocol.i_applyPnlAndFunding(FINAL_PRICE, oracleTimestamp);
-        assertEq(pnl.tempLongBalance, EXPECTED_TEMP_LONG_BALANCE, "aggregate temporary long balance");
+        assertEq(pnl.tempLongBalance, int256(EXPECTED_TEMP_LONG_BALANCE), "aggregate temporary long balance");
 
         uint256 p = uint256(FINAL_PRICE);
         uint256 a = EXPECTED_A_EXPO * (p - EXPECTED_A_PRICE_WITHOUT_PENALTY) / p;
