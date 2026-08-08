@@ -233,4 +233,34 @@ contract TestLiquidationRoundingPartialFixValidation is UsdnProtocolBaseFixture 
             "18-decimal partial batch left latent long-balance rounding drift"
         );
     }
+
+    function test_F_partialThenFinalLiquidationDoesNotSurfaceLatentCorruption() public {
+        assertEq(address(protocol.getRebalancer()), address(rebalancer), "production Rebalancer enabled");
+
+        vm.prank(PUBLIC_LIQUIDATOR);
+        Types.LiqTickInfo[] memory firstBatch = protocol.liquidate(abi.encode(PARTIAL_PRICE));
+        assertEq(firstBatch.length, 2, "first batch liquidates A+B");
+        assertEq(protocol.getTotalLongPositions(), 1, "C remains after first batch");
+        assertLe(protocol.getBalanceLong(), protocol.getTotalExpo(), "state healthy after partial batch");
+
+        _waitDelay();
+        _waitDelay();
+
+        // Stay below C's liquidation boundary but above its no-penalty price so the
+        // final position is liquidated with positive collateral instead of bad debt.
+        uint128 finalPrice = 1700 ether;
+        assertGt(protocol.getEffectivePriceForTick(posC.tick), finalPrice, "C liquidatable at final price");
+        int24 tickWithoutPenalty = protocol.i_calcTickWithoutPenalty(posC.tick);
+        assertLt(protocol.getEffectivePriceForTick(tickWithoutPenalty), finalPrice, "C still has positive collateral");
+
+        vm.prank(PUBLIC_LIQUIDATOR);
+        Types.LiqTickInfo[] memory finalBatch = protocol.liquidate(abi.encode(finalPrice));
+
+        assertEq(finalBatch.length, 1, "final batch liquidates only C");
+        assertGt(finalBatch[0].remainingCollateral, 0, "C final liquidation is not bad debt");
+        assertEq(protocol.getTotalLongPositions(), 0, "all ordinary positions removed");
+        assertEq(protocol.getTotalExpo(), 0, "all exposure removed");
+        assertEq(protocol.getBalanceLong(), 0, "no latent long-balance dust survives final batch");
+        assertEq(protocol.getHighestPopulatedTick(), protocol.minTick(), "no populated long tick remains");
+    }
 }
