@@ -38,6 +38,7 @@ contract TestLiquidationRoundingPostBootstrapRegression is UsdnProtocolBaseFixtu
     address internal constant SUPPORT_USER = address(0xCAFE);
     address internal constant USER_A = address(0xBEEF);
     address internal constant USER_B = address(0xD00D);
+    address internal constant UNPRIVILEGED_LIQUIDATOR = address(0xA11CE);
 
     PositionId internal supportPos;
     PositionId internal posA;
@@ -61,6 +62,7 @@ contract TestLiquidationRoundingPostBootstrapRegression is UsdnProtocolBaseFixtu
         vm.deal(SUPPORT_USER, 10 ether);
         vm.deal(USER_A, 10 ether);
         vm.deal(USER_B, 10 ether);
+        vm.deal(UNPRIVILEGED_LIQUIDATOR, 1 ether);
         super._setUp(params);
 
         assertEq(protocol.getLiquidationIteration(), 1, "production action liquidation iteration");
@@ -191,12 +193,16 @@ contract TestLiquidationRoundingPostBootstrapRegression is UsdnProtocolBaseFixtu
         assertEq(protocol.getHighestPopulatedTick(), EXPECTED_A_TICK, "revert must preserve highest tick");
     }
 
-    /// @dev Independent arithmetic control. PnL/funding establishes the exact
-    /// temporary long balance before liquidation. The two tick values are then
-    /// recomputed here with the source formula using separate floor divisions,
-    /// without invoking `_tickValue` or the liquidation loop.
+    /// @dev Independent arithmetic control. The production liquidation path uses
+    /// the liquidation oracle timestamp. The fixture oracle explicitly returns
+    /// block.timestamp - 30 seconds for ProtocolAction.Liquidation, so we feed
+    /// that exact timestamp into the exposed PnL/funding helper. The two tick
+    /// values are then recomputed locally with separate floor divisions, without
+    /// invoking `_tickValue` or the liquidation loop.
     function test_D_independentFloorSumLeavesExactlyOneWei() public {
-        Types.ApplyPnlAndFundingData memory pnl = protocol.i_applyPnlAndFunding(finalPrice, uint128(block.timestamp));
+        uint128 liquidationOracleTimestamp = uint128(block.timestamp - 30 seconds);
+        Types.ApplyPnlAndFundingData memory pnl =
+            protocol.i_applyPnlAndFunding(finalPrice, liquidationOracleTimestamp);
         assertEq(pnl.tempLongBalance, EXPECTED_TEMP_LONG_BALANCE, "pre-liquidation temp long balance");
 
         uint256 price = uint256(finalPrice);
@@ -207,5 +213,22 @@ contract TestLiquidationRoundingPostBootstrapRegression is UsdnProtocolBaseFixtu
         assertEq(valueB, uint256(EXPECTED_B_REMAINING), "independent tick B floor");
         assertEq(valueA + valueB, uint256(EXPECTED_TEMP_LONG_BALANCE) - 1, "floor-sum must miss one wei");
         assertEq(uint256(EXPECTED_TEMP_LONG_BALANCE) - valueA - valueB, 1, "exact arithmetic residue");
+    }
+
+    /// @dev Reachability control: the failing dedicated liquidation is not an
+    /// admin-only/internal path. A fresh EOA with no protocol role can call the
+    /// public entrypoint and deterministically hit the same invariant revert.
+    function test_E_unprivilegedEOACanReachExactProductionRevert() public {
+        assertTrue(UNPRIVILEGED_LIQUIDATOR != managers.setExternalManager, "liquidator unexpectedly external manager");
+        assertTrue(UNPRIVILEGED_LIQUIDATOR != managers.setProtocolParamsManager, "liquidator unexpectedly params manager");
+        assertTrue(UNPRIVILEGED_LIQUIDATOR != protocol.defaultAdmin(), "liquidator unexpectedly admin");
+
+        vm.startPrank(UNPRIVILEGED_LIQUIDATOR, UNPRIVILEGED_LIQUIDATOR);
+        vm.expectRevert(UsdnProtocolInvalidLongExpo.selector);
+        protocol.liquidate(abi.encode(finalPrice));
+        vm.stopPrank();
+
+        assertEq(protocol.getTotalLongPositions(), 2, "EOA revert must roll final liquidation back");
+        assertEq(protocol.getHighestPopulatedTick(), EXPECTED_A_TICK, "EOA revert must preserve highest tick");
     }
 }
