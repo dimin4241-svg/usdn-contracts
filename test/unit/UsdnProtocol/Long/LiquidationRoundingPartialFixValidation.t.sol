@@ -140,13 +140,16 @@ contract TestLiquidationRoundingPartialFixValidation is UsdnProtocolBaseFixture 
         assertLt(protocol.getBalanceLong(), protocol.getTotalExpo(), "remaining trading exposure stays positive");
     }
 
-    function test_C_reconciliationPreservesAggregateAccountingIncludingAccruedProtocolFee() public {
+    function test_C_reconciliationPreservesAggregateAccountingIncludingFeesAndLiquidatorReward() public {
         // PnL/funding redistributes between long and vault. Funding protocol fee
         // is removed from the two side balances but accumulated separately in
-        // pendingProtocolFee. Therefore this three-term accounting total should
-        // remain invariant across liquidation/reconciliation.
+        // pendingProtocolFee. Liquidation rewards are a real external wstETH
+        // outflow, so they must be added back when comparing the internal
+        // accounting total across the call.
         uint256 totalBefore =
             protocol.getBalanceLong() + protocol.getBalanceVault() + protocol.getPendingProtocolFee();
+        uint256 liquidatorBalanceBefore = wstETH.balanceOf(address(this));
+        uint256 protocolAssetBefore = wstETH.balanceOf(address(protocol));
 
         vm.prank(managers.setExternalManager);
         protocol.setRebalancer(IRebalancer(address(0)));
@@ -154,6 +157,19 @@ contract TestLiquidationRoundingPartialFixValidation is UsdnProtocolBaseFixture 
 
         uint256 totalAfter =
             protocol.getBalanceLong() + protocol.getBalanceVault() + protocol.getPendingProtocolFee();
-        assertEq(totalAfter, totalBefore, "reconciliation conserves long+vault+accrued-fee accounting");
+        uint256 liquidatorReward = wstETH.balanceOf(address(this)) - liquidatorBalanceBefore;
+        uint256 protocolAssetAfter = wstETH.balanceOf(address(protocol));
+
+        assertGt(liquidatorReward, 0, "liquidation reward must be nonzero in production-like config");
+        assertEq(
+            protocolAssetBefore - protocolAssetAfter,
+            liquidatorReward,
+            "liquidator reward is the only external asset outflow"
+        );
+        assertEq(
+            totalAfter + liquidatorReward,
+            totalBefore,
+            "reconciliation conserves long+vault+accrued-fee accounting net of reward"
+        );
     }
 }
