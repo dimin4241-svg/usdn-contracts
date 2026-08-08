@@ -22,8 +22,8 @@ jobs:
         with:
           node-version: 20
       - run: npm ci && forge soldeer install
-      - name: Run fully post-bootstrap fixed accounting witness
-        run: forge test --match-contract TestLiquidationRoundingPostBootstrapFixAccounting -vvvv
+      - name: Run whole-dollar fixed accounting witness
+        run: forge test --match-contract TestLiquidationRoundingPostBootstrapWholeDollarFixValidation -vvvv
       - name: Run fully post-bootstrap fixed withdrawal impact witness
         run: forge test --match-contract TestLiquidationRoundingPostBootstrapFixImpact -vvvv
       - name: Keep upstream Rebalancer invariant tests green
