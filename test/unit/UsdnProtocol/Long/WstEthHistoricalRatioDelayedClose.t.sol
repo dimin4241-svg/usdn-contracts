@@ -8,6 +8,7 @@ import { MockStreamVerifierProxy } from "../../Middlewares/utils/MockStreamVerif
 import { WstEthOracleMiddlewareWithDataStreams } from
     "../../../../src/OracleMiddleware/WstEthOracleMiddlewareWithDataStreams.sol";
 import { IVerifierProxy } from "../../../../src/interfaces/OracleMiddleware/IVerifierProxy.sol";
+import { PriceInfo } from "../../../../src/interfaces/OracleMiddleware/IOracleMiddlewareTypes.sol";
 import { IUsdnProtocolTypes as Types } from "../../../../src/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
 import { UsdnProtocolUtilsLibrary as Utils } from "../../../../src/UsdnProtocol/libraries/UsdnProtocolUtilsLibrary.sol";
 import { DEPLOYER } from "../../../utils/Constants.sol";
@@ -59,7 +60,7 @@ contract TestWstEthHistoricalRatioDelayedClose is UsdnProtocolBaseFixture {
 
         vm.warp(uint256(targetLimit) + 2);
 
-        Types.PriceInfo memory beforeDrift = dataStreamsMiddleware.parseAndValidatePrice(
+        PriceInfo memory beforeDrift = dataStreamsMiddleware.parseAndValidatePrice(
             bytes32(0), actionTimestamp, Types.ProtocolAction.ValidateClosePosition, abi.encode(roundId)
         );
         assertEq(beforeDrift.price, WSTETH_PRICE, "historical ETH x base ratio should equal historical wstETH price");
@@ -67,7 +68,7 @@ contract TestWstEthHistoricalRatioDelayedClose is UsdnProtocolBaseFixture {
 
         wstETH.setStEthPerToken(DRIFTED_RATIO);
 
-        Types.PriceInfo memory afterDrift = dataStreamsMiddleware.parseAndValidatePrice(
+        PriceInfo memory afterDrift = dataStreamsMiddleware.parseAndValidatePrice(
             bytes32(0), actionTimestamp, Types.ProtocolAction.ValidateClosePosition, abi.encode(roundId)
         );
 
@@ -106,7 +107,7 @@ contract TestWstEthHistoricalRatioDelayedClose is UsdnProtocolBaseFixture {
         // The ETH/USD Chainlink round used below remains the same historical round.
         wstETH.setStEthPerToken(DRIFTED_RATIO);
 
-        Types.PriceInfo memory latePrice = dataStreamsMiddleware.parseAndValidatePrice(
+        PriceInfo memory latePrice = dataStreamsMiddleware.parseAndValidatePrice(
             bytes32(0), close.timestamp, Types.ProtocolAction.ValidateClosePosition, abi.encode(roundId)
         );
         assertEq(latePrice.price, 2400 ether, "late validation must expose the current-ratio repricing");
