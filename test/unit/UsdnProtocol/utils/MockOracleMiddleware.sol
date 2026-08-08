@@ -24,6 +24,12 @@ contract MockOracleMiddleware is IBaseOracleMiddleware, IOracleMiddlewareErrors,
     bool internal _requireValidationCost = false;
     // confidence applied to the price to adjust `PriceInfo.price`
     int256 internal _priceConfBps = 0;
+    // Test-only switch used by focused impact regressions. Production OracleMiddleware routes both
+    // Liquidation and Initiate* Pyth updates through _getLowLatencyPrice(..., actionTimestamp = 0),
+    // so both may legitimately consume the same recent Pyth publishTime. The historical unit mock
+    // instead hard-codes Initiate* to block.timestamp - 30 minutes. Enable this switch to model
+    // production's fresh-Pyth path without modifying protocol source code.
+    bool internal _useRecentTimestampForInitiate;
 
     bytes32 public lastActionId;
 
@@ -48,8 +54,9 @@ contract MockOracleMiddleware is IBaseOracleMiddleware, IOracleMiddlewareErrors,
                 || action == Types.ProtocolAction.InitiateOpenPosition
                 || action == Types.ProtocolAction.InitiateClosePosition || action == Types.ProtocolAction.Initialize
         ) {
-            // simulate that we got the price 30 minutes ago
-            ts = block.timestamp - 30 minutes;
+            // The default keeps the historical mock behavior. The focused impact test can opt into
+            // production-like fresh Pyth semantics for Initiate* actions.
+            ts = _useRecentTimestampForInitiate ? block.timestamp - 30 seconds : block.timestamp - 30 minutes;
         } else if (action == Types.ProtocolAction.Liquidation) {
             // for liquidation, simulate we got a recent timestamp
             ts = block.timestamp - 30 seconds;
@@ -120,6 +127,14 @@ contract MockOracleMiddleware is IBaseOracleMiddleware, IOracleMiddlewareErrors,
 
     function setPriceConfBps(int256 confBps) external {
         _priceConfBps = confBps;
+    }
+
+    function setUseRecentTimestampForInitiate(bool useRecent) external {
+        _useRecentTimestampForInitiate = useRecent;
+    }
+
+    function useRecentTimestampForInitiate() external view returns (bool) {
+        return _useRecentTimestampForInitiate;
     }
 
     function withdrawEther(address to) external {
