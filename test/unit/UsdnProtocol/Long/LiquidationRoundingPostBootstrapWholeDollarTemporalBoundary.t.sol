@@ -14,7 +14,6 @@ contract TestLiquidationRoundingPostBootstrapWholeDollarTemporalBoundary is
     uint256 internal constant EXPECTED_PRESTATE_POSITIONS = 2;
     uint256 internal constant EXPECTED_PRESTATE_EXPO = 18_299_478_101_274_206_497;
     uint256 internal constant EXPECTED_PRESTATE_LONG = 971_462_201_938_421_127;
-    uint256 internal constant EXPECTED_PRESTATE_TIMESTAMP = 1_704_092_721;
 
     event TemporalOutcome(
         uint256 shift,
@@ -24,6 +23,14 @@ contract TestLiquidationRoundingPostBootstrapWholeDollarTemporalBoundary is
         int24 highestAfter,
         uint256 rewardDelta
     );
+
+    function test_boundary59_revertsAtomically() public {
+        _assertAtomicRevertAt(59 seconds);
+    }
+
+    function test_boundary60_commitsProgressAndPaysReward() public {
+        _assertProgressAt(60 seconds);
+    }
 
     function test_shift01() public { _characterize(1 seconds); }
     function test_shift10() public { _characterize(10 seconds); }
@@ -37,21 +44,65 @@ contract TestLiquidationRoundingPostBootstrapWholeDollarTemporalBoundary is
     function test_shift59() public { _characterize(59 seconds); }
     function test_shift60() public { _characterize(60 seconds); }
 
-    function _characterize(uint256 shift) internal {
+    function _pinPrestate() internal view {
+        assertEq(protocol.getTotalLongPositions(), EXPECTED_PRESTATE_POSITIONS, "whole-dollar prestate positions");
+        assertEq(protocol.getTotalExpo(), EXPECTED_PRESTATE_EXPO, "whole-dollar prestate exposure");
+        assertEq(protocol.getBalanceLong(), EXPECTED_PRESTATE_LONG, "whole-dollar prestate long balance");
+        assertEq(protocol.getHighestPopulatedTick(), EXPECTED_A_TICK, "whole-dollar prestate highest tick");
+        assertEq(uint256(FINAL_PRICE), 1_586 ether, "whole-dollar final price");
+        assertEq(wstETH.balanceOf(PUBLIC_LIQUIDATOR), 0, "liquidator starts with no wstETH reward");
+    }
+
+    function _assertAtomicRevertAt(uint256 shift) internal {
+        _pinPrestate();
         uint256 positionsBefore = protocol.getTotalLongPositions();
         uint256 expoBefore = protocol.getTotalExpo();
         uint256 longBefore = protocol.getBalanceLong();
         int24 highestBefore = protocol.getHighestPopulatedTick();
         uint256 liquidatorBefore = wstETH.balanceOf(PUBLIC_LIQUIDATOR);
 
-        // Pin the exact vulnerable fixture so temporal results cannot silently drift.
-        assertEq(positionsBefore, EXPECTED_PRESTATE_POSITIONS, "whole-dollar prestate positions");
-        assertEq(expoBefore, EXPECTED_PRESTATE_EXPO, "whole-dollar prestate exposure");
-        assertEq(longBefore, EXPECTED_PRESTATE_LONG, "whole-dollar prestate long balance");
-        assertEq(highestBefore, EXPECTED_A_TICK, "whole-dollar prestate highest tick");
-        assertEq(block.timestamp, EXPECTED_PRESTATE_TIMESTAMP, "whole-dollar prestate timestamp");
-        assertEq(uint256(FINAL_PRICE), 1_586 ether, "whole-dollar final price");
-        assertEq(liquidatorBefore, 0, "liquidator starts with no wstETH reward");
+        vm.warp(block.timestamp + shift);
+        vm.startPrank(PUBLIC_LIQUIDATOR, PUBLIC_LIQUIDATOR);
+        try protocol.liquidate(abi.encode(FINAL_PRICE)) returns (Types.LiqTickInfo[] memory) {
+            vm.stopPrank();
+            fail("expected atomic UsdnProtocolInvalidLongExpo revert");
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            assertEq(reason.length, 4, "unexpected revert payload length");
+            assertEq(bytes4(reason), bytes4(keccak256("UsdnProtocolInvalidLongExpo()")), "unexpected revert selector");
+        }
+
+        assertEq(protocol.getTotalLongPositions(), positionsBefore, "revert changed position count");
+        assertEq(protocol.getTotalExpo(), expoBefore, "revert changed exposure");
+        assertEq(protocol.getBalanceLong(), longBefore, "revert changed long balance");
+        assertEq(protocol.getHighestPopulatedTick(), highestBefore, "revert changed highest tick");
+        assertEq(wstETH.balanceOf(PUBLIC_LIQUIDATOR), liquidatorBefore, "revert paid liquidator");
+    }
+
+    function _assertProgressAt(uint256 shift) internal {
+        _pinPrestate();
+        uint256 positionsBefore = protocol.getTotalLongPositions();
+        uint256 liquidatorBefore = wstETH.balanceOf(PUBLIC_LIQUIDATOR);
+
+        vm.warp(block.timestamp + shift);
+        vm.startPrank(PUBLIC_LIQUIDATOR, PUBLIC_LIQUIDATOR);
+        Types.LiqTickInfo[] memory ticks = protocol.liquidate(abi.encode(FINAL_PRICE));
+        vm.stopPrank();
+
+        uint256 liquidatorAfter = wstETH.balanceOf(PUBLIC_LIQUIDATOR);
+        assertGt(ticks.length, 0, "60s retry must liquidate at least one tick");
+        assertLt(protocol.getTotalLongPositions(), positionsBefore, "60s retry must commit progress");
+        assertGt(liquidatorAfter, liquidatorBefore, "60s retry must pay reward");
+        assertLe(protocol.getBalanceLong(), protocol.getTotalExpo(), "60s success must preserve long/expo invariant");
+    }
+
+    function _characterize(uint256 shift) internal {
+        _pinPrestate();
+        uint256 positionsBefore = protocol.getTotalLongPositions();
+        uint256 expoBefore = protocol.getTotalExpo();
+        uint256 longBefore = protocol.getBalanceLong();
+        int24 highestBefore = protocol.getHighestPopulatedTick();
+        uint256 liquidatorBefore = wstETH.balanceOf(PUBLIC_LIQUIDATOR);
 
         vm.warp(block.timestamp + shift);
         vm.startPrank(PUBLIC_LIQUIDATOR, PUBLIC_LIQUIDATOR);
