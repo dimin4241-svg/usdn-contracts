@@ -23,7 +23,50 @@ jobs:
         with:
           node-version: 20
       - run: npm ci && forge soldeer install
+
       - name: Search fully post-bootstrap three-tick whole-dollar counterexample
+        id: fuzz
         env:
           FOUNDRY_FUZZ_RUNS: 4096
-        run: forge test --match-contract TestLiquidationRoundingPostBootstrapThreeTickCoarseFuzz -vvvv
+        shell: bash
+        run: |
+          set +e
+          forge test --match-contract TestLiquidationRoundingPostBootstrapThreeTickCoarseFuzz -vvvv 2>&1 | tee three-tick.log
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Emit compact diagnostic annotation
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('three-tick.log').read_text(errors='replace') if Path('three-tick.log').exists() else 'NO_LOG'
+          lines = text.splitlines()
+          keep = []
+          needles = ('THREE_TICK', 'counterexample', 'args=', '[FAIL', 'Compiler run', 'Error', 'Suite result:', 'Ran 1 test suite')
+          for line in lines:
+              if any(n in line for n in needles):
+                  keep.append(line.strip())
+          if not keep:
+              keep = lines[-20:]
+          msg = ' | '.join(keep[-12:])
+          msg = re.sub(r'[%\r\n]', ' ', msg)[:6000]
+          print(f'::error title=THREE_TICK_DIAGNOSTIC::{msg}')
+          Path('three-tick-summary.txt').write_text(msg + '\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: three-tick-search-log
+          path: |
+            three-tick.log
+            three-tick-summary.txt
+
+      - name: Preserve fuzz result
+        if: always()
+        shell: bash
+        run: exit ${{ steps.fuzz.outputs.exit_code }}
