@@ -34,6 +34,18 @@ jobs:
       - name: Probe +55s exact invariant revert
         continue-on-error: true
         run: forge test --match-contract TestLiquidationRoundingDedicatedTemporalProbe --match-test test_probe_D55_expectExactInvariantRevert -vv
+      - name: Probe +56s exact invariant revert
+        continue-on-error: true
+        run: forge test --match-contract TestLiquidationRoundingDedicatedTemporalProbe --match-test test_probe_D56_expectExactInvariantRevert -vv
+      - name: Probe +57s exact invariant revert
+        continue-on-error: true
+        run: forge test --match-contract TestLiquidationRoundingDedicatedTemporalProbe --match-test test_probe_D57_expectExactInvariantRevert -vv
+      - name: Probe +58s exact invariant revert
+        continue-on-error: true
+        run: forge test --match-contract TestLiquidationRoundingDedicatedTemporalProbe --match-test test_probe_D58_expectExactInvariantRevert -vv
+      - name: Probe +59s exact invariant revert
+        continue-on-error: true
+        run: forge test --match-contract TestLiquidationRoundingDedicatedTemporalProbe --match-test test_probe_D59_expectExactInvariantRevert -vv
       - name: Run dedicated liquidation liveness regression
         run: forge test --match-contract TestLiquidationRoundingDedicatedLiveness -vvvv
       - name: Run source post-bootstrap rounding regression
