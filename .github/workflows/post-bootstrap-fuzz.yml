@@ -22,5 +22,7 @@ jobs:
         with:
           node-version: 20
       - run: npm ci && forge soldeer install
-      - name: Run deterministic post-bootstrap regression
+      - name: Run deterministic post-bootstrap accounting regression
         run: forge test --match-contract TestLiquidationRoundingPostBootstrapRegression -vvvv
+      - name: Run deterministic post-bootstrap withdrawal impact regression
+        run: forge test --match-contract TestLiquidationRoundingPostBootstrapImpact -vvvv
