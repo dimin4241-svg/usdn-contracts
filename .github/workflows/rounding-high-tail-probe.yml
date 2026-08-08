@@ -1,0 +1,26 @@
+name: USDN low-leverage tail High probe
+
+on:
+  push:
+    branches:
+      - security/usdn-rounding-whole-dollar-vulnerable-validation
+
+permissions:
+  contents: read
+
+jobs:
+  high-probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly-50dd4b8accae878391b0825885f0632d1e0a1e4c
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci && forge soldeer install
+      - name: Low-leverage tail withdrawal recovery probe
+        run: forge test --match-contract TestLiquidationRoundingLowLeverageTailHighProbe -vvvv
