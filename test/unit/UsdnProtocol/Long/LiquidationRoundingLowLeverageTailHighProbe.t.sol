@@ -13,9 +13,9 @@ import { UsdnProtocolBaseFixture } from "../utils/Fixtures.sol";
 contract TestLiquidationRoundingLowLeverageTailHighProbe is UsdnProtocolBaseFixture {
     uint128 internal constant ENTRY_PRICE = 2000 ether;
     uint128 internal constant CRASH_PRICE = 900 ether;
-    uint128 internal constant LIVE_MIN_LONG = 0.65 ether;
+    uint128 internal constant LIVE_MIN_LONG = 650_000_000_000_000_000;
     uint128 internal constant HIGH_AMOUNT = 2 ether;
-    uint128 internal constant TAIL_DESIRED_LIQ = 20_000; // 2e-14 USD, just above TickMath minimum
+    uint128 internal constant TAIL_DESIRED_LIQ = 20_000; // raw price units, just above TickMath minimum
 
     address internal constant ACTOR1 = address(0xA001);
     address internal constant ACTOR2 = address(0xA002);
