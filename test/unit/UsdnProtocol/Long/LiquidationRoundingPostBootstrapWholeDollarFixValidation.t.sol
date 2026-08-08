@@ -166,7 +166,7 @@ contract TestLiquidationRoundingPostBootstrapWholeDollarFixValidation is UsdnPro
         // is also the base used by _triggerRebalancer() for its bonus. Seed a real pending
         // Rebalancer deposit so the trigger takes the full open-position path instead of an
         // early no-op, while restoring the witness timestamp so the exact one-wei gap remains.
-        uint128 pendingAssets = 2 ether;
+        uint88 pendingAssets = uint88(2 ether);
         uint256 witnessTimestamp = block.timestamp;
 
         wstETH.mintAndApprove(address(this), pendingAssets, address(rebalancer), type(uint256).max);
@@ -202,7 +202,7 @@ contract TestLiquidationRoundingPostBootstrapWholeDollarFixValidation is UsdnPro
         assertEq(rebalancerPosition.user, address(rebalancer), "position belongs to Rebalancer");
         assertEq(
             rebalancerPosition.amount,
-            pendingAssets + expectedBonus,
+            uint256(pendingAssets) + expectedBonus,
             "Rebalancer receives pending assets plus exactly the corrected-collateral bonus"
         );
 
