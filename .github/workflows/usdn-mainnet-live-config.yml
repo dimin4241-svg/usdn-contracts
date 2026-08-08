@@ -36,8 +36,13 @@ jobs:
           echo "balanceLong=$(cast call $PROTOCOL 'getBalanceLong()(uint256)' --rpc-url $RPC)"
           echo "balanceVault=$(cast call $PROTOCOL 'getBalanceVault()(uint256)' --rpc-url $RPC)"
           echo "highestPopulatedTick=$(cast call $PROTOCOL 'getHighestPopulatedTick()(int24)' --rpc-url $RPC)"
-          echo "lastPrice=$(cast call $PROTOCOL 'getLastPrice()(uint128)' --rpc-url $RPC)"
+          LAST_PRICE=$(cast call $PROTOCOL 'getLastPrice()(uint128)' --rpc-url $RPC | awk '{print $1}')
+          LAST_UPDATE=$(cast call $PROTOCOL 'getLastUpdateTimestamp()(uint128)' --rpc-url $RPC | awk '{print $1}')
+          echo "lastPrice=$LAST_PRICE"
+          echo "lastUpdateTimestamp=$LAST_UPDATE"
           echo "rebalancerState=$(cast call $REBALANCER 'getCurrentStateData()(uint128,uint256,(int24,uint256,uint256))' --rpc-url $RPC)"
           echo "rebalancerPendingAssets=$(cast call $REBALANCER 'getPendingAssetsAmount()(uint128)' --rpc-url $RPC)"
           echo "rebalancerMaxLeverage=$(cast call $REBALANCER 'getPositionMaxLeverage()(uint256)' --rpc-url $RPC)"
+          echo "rebalancerPosition=$(cast call $PROTOCOL 'getLongPosition((int24,uint256,uint256))((bool,uint40,address,uint128,uint128),uint24)' '(71900,0,9)' --rpc-url $RPC)"
+          echo "rebalancerPositionValue=$(cast call $PROTOCOL 'getPositionValue((int24,uint256,uint256),uint128,uint128)(int256)' '(71900,0,9)' $LAST_PRICE $LAST_UPDATE --rpc-url $RPC)"
           echo "implementationSlot=$(cast storage $PROTOCOL 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc --rpc-url $RPC)"
