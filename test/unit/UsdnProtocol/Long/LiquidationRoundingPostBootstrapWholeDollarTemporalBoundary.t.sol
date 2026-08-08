@@ -11,6 +11,11 @@ import { IUsdnProtocolTypes as Types } from "../../../../src/interfaces/UsdnProt
 contract TestLiquidationRoundingPostBootstrapWholeDollarTemporalBoundary is
     TestLiquidationRoundingPostBootstrapWholeDollarVulnerable
 {
+    uint256 internal constant EXPECTED_PRESTATE_POSITIONS = 2;
+    uint256 internal constant EXPECTED_PRESTATE_EXPO = 18_299_478_101_274_206_497;
+    uint256 internal constant EXPECTED_PRESTATE_LONG = 971_462_201_938_421_127;
+    uint256 internal constant EXPECTED_PRESTATE_TIMESTAMP = 1_704_092_721;
+
     event TemporalOutcome(
         uint256 shift,
         bool reverted,
@@ -39,8 +44,14 @@ contract TestLiquidationRoundingPostBootstrapWholeDollarTemporalBoundary is
         int24 highestBefore = protocol.getHighestPopulatedTick();
         uint256 liquidatorBefore = wstETH.balanceOf(PUBLIC_LIQUIDATOR);
 
-        assertEq(positionsBefore, 2, "whole-dollar witness must start with A+B");
-        assertEq(highestBefore, EXPECTED_A_TICK, "whole-dollar witness highest tick");
+        // Pin the exact vulnerable fixture so temporal results cannot silently drift.
+        assertEq(positionsBefore, EXPECTED_PRESTATE_POSITIONS, "whole-dollar prestate positions");
+        assertEq(expoBefore, EXPECTED_PRESTATE_EXPO, "whole-dollar prestate exposure");
+        assertEq(longBefore, EXPECTED_PRESTATE_LONG, "whole-dollar prestate long balance");
+        assertEq(highestBefore, EXPECTED_A_TICK, "whole-dollar prestate highest tick");
+        assertEq(block.timestamp, EXPECTED_PRESTATE_TIMESTAMP, "whole-dollar prestate timestamp");
+        assertEq(uint256(FINAL_PRICE), 1_586 ether, "whole-dollar final price");
+        assertEq(liquidatorBefore, 0, "liquidator starts with no wstETH reward");
 
         vm.warp(block.timestamp + shift);
         vm.startPrank(PUBLIC_LIQUIDATOR, PUBLIC_LIQUIDATOR);
