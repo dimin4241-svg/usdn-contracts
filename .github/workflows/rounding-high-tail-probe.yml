@@ -1,4 +1,4 @@
-name: USDN single-tick High probe
+name: USDN sequential withdrawal High probe
 
 on:
   push:
@@ -22,5 +22,5 @@ jobs:
         with:
           node-version: 20
       - run: npm ci && forge soldeer install
-      - name: Single-tick whole-dollar rounding probe
-        run: forge test --match-contract TestLiquidationRoundingSingleTickHighProbe -vvvv
+      - name: Sequential pending-withdrawal rounding probe
+        run: forge test --match-contract TestLiquidationRoundingSequentialWithdrawalHighProbe -vvvv
