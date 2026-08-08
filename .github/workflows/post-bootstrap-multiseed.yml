@@ -1,0 +1,74 @@
+name: USDN post-bootstrap multi-seed whole-dollar search
+
+on:
+  push:
+    branches:
+      - security/usdn-post-bootstrap-multiseed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  multiseed:
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: ['0x1', '0x2', '0x3', '0x4', '0x5', '0x6']
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly-50dd4b8accae878391b0825885f0632d1e0a1e4c
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci && forge soldeer install
+
+      - name: Search seed ${{ matrix.seed }}
+        id: fuzz
+        env:
+          FOUNDRY_FUZZ_RUNS: 1024
+          FOUNDRY_FUZZ_SEED: ${{ matrix.seed }}
+        shell: bash
+        run: |
+          set +e
+          forge test --match-contract TestLiquidationRoundingPostBootstrapWholeDollarMultiSeedFuzz -vvvv 2>&1 | tee multiseed.log
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Compact result
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('multiseed.log').read_text(errors='replace') if Path('multiseed.log').exists() else 'NO_LOG'
+          lines = text.splitlines()
+          needles = ('MULTISEED_', 'counterexample', 'args=', '[FAIL', 'Suite result:', 'Ran 1 test suite', 'Compiler run')
+          keep = [line.strip() for line in lines if any(n in line for n in needles)]
+          if not keep:
+              keep = lines[-20:]
+          msg = ' | '.join(keep[-12:])
+          msg = re.sub(r'[%\r\n]', ' ', msg)[:6000]
+          Path('multiseed-summary.txt').write_text('seed=${{ matrix.seed }}\n' + msg + '\n')
+          print(f'::error title=MULTISEED_${{ matrix.seed }}::{msg}')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: multiseed-${{ strategy.job-index }}
+          path: |
+            multiseed.log
+            multiseed-summary.txt
+
+      - name: Preserve fuzz result
+        if: always()
+        shell: bash
+        run: exit ${{ steps.fuzz.outputs.exit_code }}
