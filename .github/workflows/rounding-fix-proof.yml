@@ -22,6 +22,8 @@ jobs:
         with:
           node-version: 20
       - run: npm ci && forge soldeer install
+      - name: Exact green-side A/B symmetry proof
+        run: forge test --match-contract TestLiquidationRoundingPostBootstrapWholeDollarFixSymmetry -vvvv
       - name: Whole-dollar post-bootstrap green regression
         run: forge test --match-contract TestLiquidationRoundingPostBootstrapWholeDollarFixValidation -vvvv
       - name: Post-bootstrap accounting regression
