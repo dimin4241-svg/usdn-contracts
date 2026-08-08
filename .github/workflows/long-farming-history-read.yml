@@ -23,101 +23,82 @@ jobs:
           LONG_FARMING: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
         run: |
           set -euo pipefail
-          export DEP_TOPIC=$(cast keccak 'Deposit(address,int24,uint256,uint256)')
-          export WDR_TOPIC=$(cast keccak 'Withdraw(address,int24,uint256,uint256)')
-          export SLS_TOPIC=$(cast keccak 'Slash(address,uint256,uint256,int24,uint256,uint256)')
           python3 - <<'PY'
           import os, json, subprocess
 
           rpc = os.environ['RPC_URL']
-          addr = os.environ['LONG_FARMING'].lower()
-          dep = os.environ['DEP_TOPIC'].lower()
-          wdr = os.environ['WDR_TOPIC'].lower()
-          sls = os.environ['SLS_TOPIC'].lower()
-
+          addr = os.environ['LONG_FARMING']
           lo, hi = 21_683_491, 25_056_370
-          chunk = 40_000
+          chunk = 20_000
 
-          def rpc_call(method, params):
-              args = ['cast','rpc','--rpc-url',rpc,method]
-              for p in params:
-                  if isinstance(p, (dict,list)):
-                      args.append(json.dumps(p,separators=(',',':')))
-                  else:
-                      args.append(str(p))
-              raw = subprocess.check_output(args, text=True, stderr=subprocess.STDOUT).strip()
-              # cast rpc prints the JSON-RPC result itself.
-              try:
-                  return json.loads(raw)
-              except json.JSONDecodeError:
-                  return raw.strip('"')
+          events = {
+              'Deposit': 'Deposit(address,int24,uint256,uint256)',
+              'Withdraw': 'Withdraw(address,int24,uint256,uint256)',
+              'Slash': 'Slash(address,uint256,uint256,int24,uint256,uint256)',
+          }
 
-          a, b = lo, hi
-          if rpc_call('eth_getCode', [addr, hex(b)]) == '0x':
-              raise RuntimeError('LongFarming not deployed by end of positive-emission history')
-          while a < b:
-              m = (a+b)//2
-              if rpc_call('eth_getCode', [addr, hex(m)]) != '0x':
-                  b = m
-              else:
-                  a = m+1
-          deployment = a
-          print('deploymentBlock', deployment)
+          def get_logs(sig, start, end):
+              cmd = [
+                  'cast','logs','--json','--rpc-url',rpc,'--address',addr,
+                  '--from-block',str(start),'--to-block',str(end),sig
+              ]
+              raw = subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT).strip()
+              return json.loads(raw) if raw else []
 
-          logs = []
-          start = deployment
-          topics = [[dep, wdr, sls]]
-          while start <= hi:
-              end = min(start + chunk - 1, hi)
-              flt = {'address': addr, 'fromBlock': hex(start), 'toBlock': hex(end), 'topics': topics}
-              batch = rpc_call('eth_getLogs', [flt])
-              logs.extend(batch)
-              print('scanned', start, end, 'events', len(batch))
-              start = end + 1
+          logs=[]
+          for start in range(lo, hi+1, chunk):
+              end=min(start+chunk-1,hi)
+              n=0
+              for kind,sig in events.items():
+                  batch=get_logs(sig,start,end)
+                  for x in batch:
+                      x['_kind']=kind
+                  logs.extend(batch)
+                  n += len(batch)
+              print('scanned',start,end,'events',n)
 
-          logs.sort(key=lambda x:(int(x['blockNumber'],16), int(x['transactionIndex'],16), int(x['logIndex'],16)))
-          count = 0
-          zero_windows = []
-          zero_start = deployment
+          def to_int(v):
+              if isinstance(v,int): return v
+              return int(v,16) if str(v).startswith('0x') else int(v)
+
+          logs.sort(key=lambda x:(to_int(x['blockNumber']),to_int(x.get('transactionIndex',0)),to_int(x.get('logIndex',0))))
+
+          count=0
+          zero_windows=[]
+          zero_start=lo
           transitions=[]
           for log in logs:
-              block = int(log['blockNumber'],16)
-              topic = log['topics'][0].lower()
+              block=to_int(log['blockNumber'])
+              kind=log['_kind']
               before=count
-              if topic == dep:
-                  count += 1
-                  kind='Deposit'
-              elif topic in (wdr,sls):
-                  count -= 1
-                  kind='Withdraw' if topic==wdr else 'Slash'
-              else:
-                  continue
+              if kind=='Deposit': count += 1
+              else: count -= 1
               if count < 0:
-                  raise RuntimeError(f'negative reconstructed count at block {block}')
-              transitions.append((block,kind,before,count,log['transactionHash']))
+                  raise RuntimeError(f'negative reconstructed count at block {block}, kind={kind}')
+              transitions.append((block,kind,before,count,log.get('transactionHash')))
               if before==0 and count>0 and zero_start is not None:
-                  zero_windows.append((zero_start, block))
+                  zero_windows.append((zero_start,block))
                   zero_start=None
               elif before>0 and count==0:
                   zero_start=block
           if zero_start is not None:
-              zero_windows.append((zero_start, hi+1))
+              zero_windows.append((zero_start,hi+1))
 
-          print('totalRelevantEvents', len(transitions))
-          print('finalReconstructedCountAtPositiveEnd', count)
+          print('totalRelevantEvents',len(transitions))
+          print('finalReconstructedCountAtPositiveEnd',count)
           print('first20Transitions')
           for x in transitions[:20]: print(x)
           print('last20Transitions')
           for x in transitions[-20:]: print(x)
 
-          phases = [
+          phases=[
               (21_684_000,21_776_314,149_146_814_241_486_068_111),
               (21_776_314,22_490_167,83_474_852_560_444_052_688),
               (22_490_167,23_808_566,17_439_128_063_659_028_867),
               (24_420_560,25_056_370,31_455_938_094_713_829_603),
           ]
-          print('zeroWindowsIntersectingPositiveEmission')
           found=[]
+          print('zeroWindowsIntersectingPositiveEmission')
           for zs,ze in zero_windows:
               for ps,pe,rpb in phases:
                   s=max(zs,ps); e=min(ze,pe)
