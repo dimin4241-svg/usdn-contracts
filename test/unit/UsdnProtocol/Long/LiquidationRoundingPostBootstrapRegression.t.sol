@@ -196,7 +196,10 @@ contract TestLiquidationRoundingPostBootstrapRegression is UsdnProtocolBaseFixtu
     /// recomputed here with the source formula using separate floor divisions,
     /// without invoking `_tickValue` or the liquidation loop.
     function test_D_independentFloorSumLeavesExactlyOneWei() public {
-        Types.ApplyPnlAndFundingData memory pnl = protocol.i_applyPnlAndFunding(finalPrice, uint128(block.timestamp));
+        // Match the timestamp used by the fixture's real dedicated liquidation path:
+        // MockOracleMiddleware returns block.timestamp - 30 seconds for ProtocolAction.Liquidation.
+        Types.ApplyPnlAndFundingData memory pnl =
+            protocol.i_applyPnlAndFunding(finalPrice, uint128(block.timestamp - 30 seconds));
         assertEq(pnl.tempLongBalance, EXPECTED_TEMP_LONG_BALANCE, "pre-liquidation temp long balance");
 
         uint256 price = uint256(finalPrice);
