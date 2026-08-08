@@ -9,7 +9,7 @@ import { IUsdnProtocolTypes as Types } from "../../../../src/interfaces/UsdnProt
 /// The initialization-created long is fully liquidated and accounting reaches
 /// positions=0,totalExpo=0,balanceLong=0 before any position involved in the
 /// witness is created. All later positions use ordinary public open/validate
-/// flows under production-like economic flags and limits.
+/// flows under production economic flags, limits and role separation.
 contract TestLiquidationRoundingPostBootstrapRegression is UsdnProtocolBaseFixture {
     uint128 internal constant ENTRY_PRICE = 2000 ether;
     uint128 internal constant BOOTSTRAP_LIQ_PRICE = 980 ether;
@@ -39,6 +39,8 @@ contract TestLiquidationRoundingPostBootstrapRegression is UsdnProtocolBaseFixtu
     address internal constant USER_A = address(0xBEEF);
     address internal constant USER_B = address(0xD00D);
     address internal constant UNPRIVILEGED_LIQUIDATOR = address(0xA11CE);
+    address internal constant UNPRIVILEGED_LIQUIDATOR_2 = address(0xA11CF);
+    address internal constant UNPRIVILEGED_LIQUIDATOR_3 = address(0xA11D0);
 
     PositionId internal supportPos;
     PositionId internal posA;
@@ -58,11 +60,14 @@ contract TestLiquidationRoundingPostBootstrapRegression is UsdnProtocolBaseFixtu
         params.flags.enableLongLimit = true;
         params.flags.enableRebalancer = true;
         params.flags.enableLiquidationRewards = true;
+        params.flags.enableRoles = true;
 
         vm.deal(SUPPORT_USER, 10 ether);
         vm.deal(USER_A, 10 ether);
         vm.deal(USER_B, 10 ether);
         vm.deal(UNPRIVILEGED_LIQUIDATOR, 1 ether);
+        vm.deal(UNPRIVILEGED_LIQUIDATOR_2, 1 ether);
+        vm.deal(UNPRIVILEGED_LIQUIDATOR_3, 1 ether);
         super._setUp(params);
 
         assertEq(protocol.getLiquidationIteration(), 1, "production action liquidation iteration");
@@ -71,6 +76,8 @@ contract TestLiquidationRoundingPostBootstrapRegression is UsdnProtocolBaseFixtu
         assertEq(protocol.getMinLongPosition(), 2 ether, "production min long");
         assertGt(protocol.getCloseExpoImbalanceLimitBps(), 0, "close imbalance limit enabled");
         assertEq(address(protocol.getRebalancer()), address(rebalancer), "production Rebalancer installed");
+        assertTrue(managers.setExternalManager != managers.setProtocolParamsManager, "manager roles must be separated");
+        assertTrue(managers.setExternalManager != protocol.defaultAdmin(), "external manager must not be admin");
 
         // Remove the initialization-created long completely. This is a hard
         // precondition of the witness, not merely an assumption.
@@ -230,5 +237,24 @@ contract TestLiquidationRoundingPostBootstrapRegression is UsdnProtocolBaseFixtu
 
         assertEq(protocol.getTotalLongPositions(), 2, "EOA revert must roll final liquidation back");
         assertEq(protocol.getHighestPopulatedTick(), EXPECTED_A_TICK, "EOA revert must preserve highest tick");
+    }
+
+    /// @dev Retry control: dedicated liquidate() has no caller-supplied tick
+    /// iteration. Its public path always requests MAX_LIQUIDATION_ITERATION.
+    /// Since the invariant revert rolls the batch back, independent EOAs cannot
+    /// make progress by simply retrying the same valid liquidation.
+    function test_F_multipleUnprivilegedRetriesRemainSticky() public {
+        address[3] memory callers =
+            [UNPRIVILEGED_LIQUIDATOR, UNPRIVILEGED_LIQUIDATOR_2, UNPRIVILEGED_LIQUIDATOR_3];
+
+        for (uint256 i; i < callers.length; ++i) {
+            vm.startPrank(callers[i], callers[i]);
+            vm.expectRevert(UsdnProtocolInvalidLongExpo.selector);
+            protocol.liquidate(abi.encode(finalPrice));
+            vm.stopPrank();
+
+            assertEq(protocol.getTotalLongPositions(), 2, "retry must not consume a tick");
+            assertEq(protocol.getHighestPopulatedTick(), EXPECTED_A_TICK, "retry must preserve highest tick");
+        }
     }
 }
