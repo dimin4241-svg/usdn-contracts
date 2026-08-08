@@ -1,0 +1,26 @@
+name: USDN wstETH historical-ratio delayed-close PoC
+
+on:
+  push:
+    branches:
+      - security/usdn-wsteth-historical-ratio-poc
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly-50dd4b8accae878391b0825885f0632d1e0a1e4c
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci && forge soldeer install
+      - name: Historical ratio and delayed close proof
+        run: forge test --match-contract TestWstEthHistoricalRatioDelayedClose -vvvv
