@@ -5,9 +5,10 @@ import { UsdnProtocolBaseFixture } from "../utils/Fixtures.sol";
 import { IUsdnProtocolTypes as Types } from "../../../../src/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
 
 /// @notice Economic edge-case validation for the multi-tick liquidation reconciliation fix.
-/// @dev Covers the two cases most likely to make the reconciliation unsafe:
-///      (1) a negative raw liquidation value with an active Rebalancer, and
-///      (2) reconciliation changing the Rebalancer bonus base / interacting with its cap.
+/// @dev Covers the cases most likely to make the reconciliation unsafe:
+///      (1) a negative raw liquidation value with an active Rebalancer,
+///      (2) reconciliation changing the Rebalancer bonus base / interacting with its cap, and
+///      (3) the defensive remainingTradingExpo <= remainingTotalExpo guard.
 contract TestLiquidationRoundingEconomicEdgeValidation is UsdnProtocolBaseFixture {
     uint128 internal constant BOOTSTRAP_LIQ_PRICE = 980 ether;
     address internal constant REBALANCER_DEPOSITOR = address(0xB0A5);
@@ -156,5 +157,50 @@ contract TestLiquidationRoundingEconomicEdgeValidation is UsdnProtocolBaseFixtur
         uint256 bonus = corrected * bonusBps / 10_000;
 
         assertLe(bonus, corrected, "sign-crossing bonus cannot exceed net collateral credited to vault");
+    }
+
+    /// @notice Proves the new defensive guard cannot fire for a solvent set of remaining ticks.
+    ///
+    /// Let A be the old accumulator, T the old long trading exposure, A' the accumulator of the
+    /// ticks that survive the batch, and E' their total exposure. The fix reconstructs
+    /// T' = floor(A' * T / A). For every surviving position, its no-penalty unadjusted tick price
+    /// p_i is solvent at the current common multiplier, which is equivalent to p_i * T <= A.
+    /// Multiplying by each exposure and summing gives A' * T <= A * E', therefore T' <= E'.
+    ///
+    /// Liquidation penalties do not weaken this result: a nonnegative penalty only moves the
+    /// no-penalty tick below the stored liquidation tick. Thus even heterogeneous historical
+    /// penalties cannot turn this defensive check into a reachable DoS.
+    function testFuzz_E_remainingTradingExpoCannotExceedRemainingExpoForSolventTicks(
+        uint64 price1Seed,
+        uint64 price2Seed,
+        uint64 expo1Seed,
+        uint64 expo2Seed,
+        uint64 removedAccumulatorSeed,
+        uint64 tradingExpoSeed
+    ) public pure {
+        uint256 p1 = uint256(price1Seed) + 1;
+        uint256 p2 = uint256(price2Seed) + 1;
+        uint256 e1 = uint256(expo1Seed) + 1;
+        uint256 e2 = uint256(expo2Seed) + 1;
+
+        uint256 remainingAccumulator = p1 * e1 + p2 * e2;
+        uint256 oldAccumulator = remainingAccumulator + uint256(removedAccumulatorSeed) + 1;
+        uint256 maxRemainingPrice = p1 > p2 ? p1 : p2;
+
+        // Choose T inside the full range for which every surviving no-penalty tick is solvent:
+        // p_i * T <= A. oldAccumulator >= remainingAccumulator >= maxRemainingPrice, so nonzero.
+        uint256 maxSolventTradingExpo = oldAccumulator / maxRemainingPrice;
+        uint256 tradingExpo = uint256(tradingExpoSeed) % maxSolventTradingExpo + 1;
+
+        assertLe(p1 * tradingExpo, oldAccumulator, "survivor 1 must be solvent");
+        assertLe(p2 * tradingExpo, oldAccumulator, "survivor 2 must be solvent");
+
+        uint256 remainingTradingExpo = remainingAccumulator * tradingExpo / oldAccumulator;
+        uint256 remainingTotalExpo = e1 + e2;
+        assertLe(
+            remainingTradingExpo,
+            remainingTotalExpo,
+            "defensive remainingTradingExpo guard fired for a solvent survivor set"
+        );
     }
 }
