@@ -71,4 +71,59 @@ contract TestLiquidationRoundingDedicatedLiveness is TestLiquidationRoundingPost
         assertEq(protocol.getTotalExpo(), 0, "same batch did not clear exposure");
         assertEq(protocol.getBalanceLong(), 1, "source must commit exact one-wei residue without sink");
     }
+
+    /// @dev Time-shift controls answer the keeper-retry objection. Each Foundry test starts from the same freshly
+    /// built witness, then advances wall-clock time before calling the dedicated endpoint. MockOracleMiddleware
+    /// derives a fresh liquidation timestamp from the shifted block time, so funding/PnL are recomputed rather than
+    /// replaying the original oracle snapshot. We only claim the concrete window that these tests actually prove.
+    function test_D01_dedicatedLiquidationStillRevertsAfterOneSecond() public {
+        _assertTimeShiftedDedicatedRetry(1 seconds);
+    }
+
+    function test_D05_dedicatedLiquidationStillRevertsAfterFiveSeconds() public {
+        _assertTimeShiftedDedicatedRetry(5 seconds);
+    }
+
+    function test_D10_dedicatedLiquidationStillRevertsAfterTenSeconds() public {
+        _assertTimeShiftedDedicatedRetry(10 seconds);
+    }
+
+    function test_D30_dedicatedLiquidationStillRevertsAfterThirtySeconds() public {
+        _assertTimeShiftedDedicatedRetry(30 seconds);
+    }
+
+    function test_D60_dedicatedLiquidationStillRevertsAfterSixtySeconds() public {
+        _assertTimeShiftedDedicatedRetry(60 seconds);
+    }
+
+    function _assertTimeShiftedDedicatedRetry(uint256 shift) internal {
+        uint256 positionsBefore = protocol.getTotalLongPositions();
+        int24 highestBefore = protocol.getHighestPopulatedTick();
+        uint256 expoBefore = protocol.getTotalExpo();
+        uint256 longBalanceBefore = protocol.getBalanceLong();
+        uint256 vaultBalanceBefore = protocol.getBalanceVault();
+        int256 pendingVaultBefore = protocol.getPendingBalanceVault();
+        uint256 pendingFeeBefore = protocol.getPendingProtocolFee();
+        uint256 protocolAssetBefore = wstETH.balanceOf(address(protocol));
+        uint256 liquidatorAssetBefore = wstETH.balanceOf(address(this));
+        uint256 tickAVersionBefore = protocol.getTickVersion(posA.tick);
+        uint256 tickBVersionBefore = protocol.getTickVersion(posB.tick);
+
+        vm.warp(block.timestamp + shift);
+
+        vm.expectRevert(UsdnProtocolInvalidLongExpo.selector);
+        protocol.liquidate(abi.encode(finalPrice));
+
+        assertEq(protocol.getTotalLongPositions(), positionsBefore, "time-shift retry changed position count");
+        assertEq(protocol.getHighestPopulatedTick(), highestBefore, "time-shift retry changed highest tick");
+        assertEq(protocol.getTotalExpo(), expoBefore, "time-shift retry changed total exposure");
+        assertEq(protocol.getBalanceLong(), longBalanceBefore, "time-shift retry changed long balance");
+        assertEq(protocol.getBalanceVault(), vaultBalanceBefore, "time-shift retry changed vault balance");
+        assertEq(protocol.getPendingBalanceVault(), pendingVaultBefore, "time-shift retry changed pending vault balance");
+        assertEq(protocol.getPendingProtocolFee(), pendingFeeBefore, "time-shift retry changed pending protocol fee");
+        assertEq(wstETH.balanceOf(address(protocol)), protocolAssetBefore, "time-shift retry changed protocol assets");
+        assertEq(wstETH.balanceOf(address(this)), liquidatorAssetBefore, "time-shift retry paid liquidator");
+        assertEq(protocol.getTickVersion(posA.tick), tickAVersionBefore, "time-shift retry changed tick A version");
+        assertEq(protocol.getTickVersion(posB.tick), tickBVersionBefore, "time-shift retry changed tick B version");
+    }
 }
