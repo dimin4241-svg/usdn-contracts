@@ -24,7 +24,11 @@ jobs:
       - run: npm ci && forge soldeer install
       - name: Exact whole-dollar vulnerable-side witness
         run: forge test --match-contract TestLiquidationRoundingPostBootstrapWholeDollarVulnerable -vvvv
-      - name: Exact whole-dollar temporal boundary
+      - name: Boundary control - plus 59 seconds still atomically reverts
+        run: forge test --match-contract TestLiquidationRoundingPostBootstrapWholeDollarTemporalBoundary --match-test test_boundary59_revertsAtomically -vvvv
+      - name: Boundary control - plus 60 seconds commits progress
+        run: forge test --match-contract TestLiquidationRoundingPostBootstrapWholeDollarTemporalBoundary --match-test test_boundary60_commitsProgressAndPaysReward -vvvv
+      - name: Temporal sweep characterization
         run: forge test --match-contract TestLiquidationRoundingPostBootstrapWholeDollarTemporalBoundary -vvvv
       - name: Preserve real upstream Rebalancer safety check
         run: forge test --match-test test_RevertWhen_triggerRebalancerWithTotalExpoBelowLongBalance -vvvv
