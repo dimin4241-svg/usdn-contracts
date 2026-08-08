@@ -1,4 +1,4 @@
-name: USDN post-bootstrap coarse-price search
+name: USDN post-bootstrap whole-dollar regression
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  coarse-fuzz:
+  whole-dollar-regression:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,5 +22,5 @@ jobs:
         with:
           node-version: 20
       - run: npm ci && forge soldeer install
-      - name: Search whole-dollar post-bootstrap witness
-        run: forge test --match-contract TestLiquidationRoundingPostBootstrapCoarseFuzz --fuzz-runs 8192 -vvvv
+      - name: Verify deterministic whole-dollar post-bootstrap witness
+        run: forge test --match-contract TestLiquidationRoundingPostBootstrapWholeDollarRegression -vvvv
