@@ -65,7 +65,7 @@ contract TestLiquidationRoundingPostBootstrapWholeDollarTemporalBoundary is
         vm.startPrank(PUBLIC_LIQUIDATOR, PUBLIC_LIQUIDATOR);
         try protocol.liquidate(abi.encode(FINAL_PRICE)) returns (Types.LiqTickInfo[] memory) {
             vm.stopPrank();
-            fail("expected atomic UsdnProtocolInvalidLongExpo revert");
+            assertTrue(false, "expected atomic UsdnProtocolInvalidLongExpo revert");
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertEq(reason.length, 4, "unexpected revert payload length");
