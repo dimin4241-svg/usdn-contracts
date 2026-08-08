@@ -5,11 +5,21 @@ import { UsdnProtocolBaseFixture } from "../utils/Fixtures.sol";
 import { IRebalancer } from "../../../../src/interfaces/Rebalancer/IRebalancer.sol";
 import { IUsdnProtocolTypes as Types } from "../../../../src/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
 
+/// @notice Scale control for the whole-dollar witness. All collateral magnitudes are 10x larger
+/// than the primary deterministic reproduction while desired liquidation and oracle prices stay unchanged.
 contract TestLiquidationRoundingPostBootstrapScale10x is UsdnProtocolBaseFixture {
     uint128 internal constant ENTRY_PRICE = 2000 ether;
     uint128 internal constant BOOTSTRAP_LIQ_PRICE = 980 ether;
     uint128 internal constant STAGE_PRICE = 1651 ether;
     uint128 internal constant FINAL_PRICE = 1586 ether;
+
+    uint256 internal constant EXPECTED_A_EXPO = 93_138_310_789_196_227_268;
+    uint256 internal constant EXPECTED_B_EXPO = 89_856_453_784_474_317_897;
+    uint256 internal constant EXPECTED_A_PRICE_WITHOUT_PENALTY = 1_570_940_508_592_271_423_354;
+    uint256 internal constant EXPECTED_B_PRICE_WITHOUT_PENALTY = 1_555_310_166_964_661_193_276;
+    uint256 internal constant EXPECTED_A_REMAINING = 884_373_008_234_712_718;
+    uint256 internal constant EXPECTED_B_REMAINING = 1_738_763_911_597_197_138;
+    int256 internal constant EXPECTED_TEMP_LONG_BALANCE = 2_623_136_919_831_909_857;
 
     address internal constant SUPPORT_USER = address(0xCAFE);
     address internal constant USER_A = address(0xBEEF);
@@ -86,13 +96,34 @@ contract TestLiquidationRoundingPostBootstrapScale10x is UsdnProtocolBaseFixture
 
         Types.LiqTickInfo[] memory ticks = protocol.liquidate(abi.encode(FINAL_PRICE));
         assertEq(ticks.length, 2, "final batch must contain A+B");
+        assertEq(ticks[0].totalExpo, EXPECTED_A_EXPO, "10x tick A expo");
+        assertEq(ticks[1].totalExpo, EXPECTED_B_EXPO, "10x tick B expo");
+        assertEq(uint256(ticks[0].remainingCollateral), EXPECTED_A_REMAINING, "10x tick A collateral");
+        assertEq(uint256(ticks[1].remainingCollateral), EXPECTED_B_REMAINING, "10x tick B collateral");
         assertEq(protocol.getTotalLongPositions(), 0, "all positions removed");
         assertEq(protocol.getTotalExpo(), 0, "all exposure removed");
-        assertGt(protocol.getBalanceLong(), 0, "10x scale must still leave positive long residue");
+        assertEq(protocol.getBalanceLong(), 1, "10x scale leaves exact one-wei residue");
         assertGt(protocol.getBalanceLong(), protocol.getTotalExpo(), "same invariant break at 10x scale");
     }
 
-    function test_B_10xScaleProductionSink() public {
+    /// @dev Reproduce the 10x residue without relying on the liquidation helper's collateral output.
+    function test_B_10xIndependentArithmeticStillLeavesExactlyOneWei() public {
+        uint128 liquidationOracleTimestamp = uint128(block.timestamp - 30 seconds);
+        Types.ApplyPnlAndFundingData memory pnl =
+            protocol.i_applyPnlAndFunding(FINAL_PRICE, liquidationOracleTimestamp);
+        assertEq(pnl.tempLongBalance, EXPECTED_TEMP_LONG_BALANCE, "10x temporary long balance");
+
+        uint256 price = uint256(FINAL_PRICE);
+        uint256 valueA = EXPECTED_A_EXPO * (price - EXPECTED_A_PRICE_WITHOUT_PENALTY) / price;
+        uint256 valueB = EXPECTED_B_EXPO * (price - EXPECTED_B_PRICE_WITHOUT_PENALTY) / price;
+
+        assertEq(valueA, EXPECTED_A_REMAINING, "10x independent tick A floor");
+        assertEq(valueB, EXPECTED_B_REMAINING, "10x independent tick B floor");
+        assertEq(valueA + valueB, uint256(EXPECTED_TEMP_LONG_BALANCE) - 1, "10x floor sum misses one wei");
+        assertEq(uint256(EXPECTED_TEMP_LONG_BALANCE) - valueA - valueB, 1, "10x exact rounding residue");
+    }
+
+    function test_C_10xScaleProductionSink() public {
         vm.startPrank(PUBLIC_LIQUIDATOR, PUBLIC_LIQUIDATOR);
         vm.expectRevert(UsdnProtocolInvalidLongExpo.selector);
         protocol.liquidate(abi.encode(FINAL_PRICE));
