@@ -1,0 +1,29 @@
+name: USDN three-tick rounding fix validation
+
+on:
+  push:
+    branches:
+      - security/usdn-rounding-fix-three-tick-validation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly-50dd4b8accae878391b0825885f0632d1e0a1e4c
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci && forge soldeer install
+      - name: Three-tick red-to-green validation
+        run: forge test --match-contract TestLiquidationRoundingPostBootstrapThreeTickFixValidation -vvvv
+      - name: Preserve production Rebalancer invariant suite
+        run: forge test --match-path 'test/unit/UsdnProtocol/Long/_TriggerRebalancer.t.sol' -vvvv
