@@ -172,4 +172,36 @@ contract TestLiquidationRoundingPartialFixValidation is UsdnProtocolBaseFixture 
             "reconciliation conserves long+vault+accrued-fee accounting net of reward"
         );
     }
+
+    function testFuzz_D_partialBatchLeavesExactValueForSoleRemainingPosition(uint16 wholeDollarPrice) public {
+        // Search the entire coarse-price interval where A+B are liquidatable but C is not.
+        // This challenges a subtler failure mode: a partial multi-tick batch could keep
+        // balanceLong <= totalExpo (so the safety sink does not fire) while still leaving
+        // a latent one-wei accounting drift that only surfaces in a later batch.
+        wholeDollarPrice = uint16(bound(wholeDollarPrice, 1720, 1735));
+        uint128 price = uint128(uint256(wholeDollarPrice) * 1 ether);
+
+        vm.prank(managers.setExternalManager);
+        protocol.setRebalancer(IRebalancer(address(0)));
+
+        Types.LiqTickInfo[] memory ticks = protocol.liquidate(abi.encode(price));
+        assertEq(ticks.length, 2, "coarse price must liquidate exactly A+B");
+        assertEq(protocol.getTotalLongPositions(), 1, "C must be sole remaining position");
+
+        (Types.Position memory remaining,) = protocol.getLongPosition(posC);
+        assertTrue(remaining.validated, "C remains validated");
+        assertEq(protocol.getTotalExpo(), remaining.totalExpo, "aggregate expo equals C");
+
+        int24 tickWithoutPenalty = protocol.i_calcTickWithoutPenalty(posC.tick);
+        uint256 liqPriceWithoutPenalty = protocol.getEffectivePriceForTick(tickWithoutPenalty);
+        int256 independentValue =
+            protocol.i_positionValue(remaining.totalExpo, price, uint128(liqPriceWithoutPenalty));
+
+        assertGt(independentValue, 0, "C value remains positive");
+        assertEq(
+            protocol.getBalanceLong(),
+            uint256(independentValue),
+            "partial multi-tick batch left latent long-balance rounding drift"
+        );
+    }
 }
