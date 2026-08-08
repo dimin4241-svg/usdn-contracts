@@ -51,7 +51,6 @@ contract TestLiquidationRoundingPartialFixValidation is UsdnProtocolBaseFixture 
         assertEq(protocol.getLiquidationIteration(), 1, "production action iteration");
         assertEq(address(protocol.getRebalancer()), address(rebalancer), "production Rebalancer installed");
 
-        // Remove initialization state before all witness positions.
         _waitDelay();
         _waitDelay();
         protocol.liquidate(abi.encode(BOOTSTRAP_LIQ_PRICE));
@@ -91,7 +90,6 @@ contract TestLiquidationRoundingPartialFixValidation is UsdnProtocolBaseFixture 
         _waitDelay();
         _waitDelay();
 
-        // At $1725, A and B are liquidatable while C remains above the price.
         assertLt(protocol.getEffectivePriceForTick(posA.tick), 1800 ether, "sanity A boundary");
         assertGt(protocol.getEffectivePriceForTick(posA.tick), PARTIAL_PRICE, "A liquidatable");
         assertGt(protocol.getEffectivePriceForTick(posB.tick), PARTIAL_PRICE, "B liquidatable");
@@ -117,8 +115,6 @@ contract TestLiquidationRoundingPartialFixValidation is UsdnProtocolBaseFixture 
     }
 
     function test_B_reconciledBalanceEqualsIndependentValueOfSoleRemainingPosition() public {
-        // Disable Rebalancer only immediately before the call so no Rebalancer
-        // position can obscure the accounting identity being tested.
         vm.prank(managers.setExternalManager);
         protocol.setRebalancer(IRebalancer(address(0)));
 
@@ -144,20 +140,20 @@ contract TestLiquidationRoundingPartialFixValidation is UsdnProtocolBaseFixture 
         assertLt(protocol.getBalanceLong(), protocol.getTotalExpo(), "remaining trading exposure stays positive");
     }
 
-    function test_C_reconciliationCannotChangeAggregateLongPlusVaultAccounting() public {
-        // Funding/PnL can move value between sides and protocol funding fee can
-        // remove value from the two balances. Query that fee before the state
-        // update, then isolate Rebalancer and prove liquidation/reconciliation
-        // itself is a pure transfer between long and vault accounting.
-        uint256 sumBefore = protocol.getBalanceLong() + protocol.getBalanceVault();
-        (, int256 fee) = protocol.longAssetAvailableWithFunding(PARTIAL_PRICE, uint128(block.timestamp - 30 seconds));
-        uint256 absFee = fee >= 0 ? uint256(fee) : uint256(-fee);
+    function test_C_reconciliationPreservesAggregateAccountingIncludingAccruedProtocolFee() public {
+        // PnL/funding redistributes between long and vault. Funding protocol fee
+        // is removed from the two side balances but accumulated separately in
+        // pendingProtocolFee. Therefore this three-term accounting total should
+        // remain invariant across liquidation/reconciliation.
+        uint256 totalBefore =
+            protocol.getBalanceLong() + protocol.getBalanceVault() + protocol.getPendingProtocolFee();
 
         vm.prank(managers.setExternalManager);
         protocol.setRebalancer(IRebalancer(address(0)));
         protocol.liquidate(abi.encode(PARTIAL_PRICE));
 
-        uint256 sumAfter = protocol.getBalanceLong() + protocol.getBalanceVault();
-        assertEq(sumAfter + absFee, sumBefore, "reconciliation preserves aggregate side accounting apart from protocol fee");
+        uint256 totalAfter =
+            protocol.getBalanceLong() + protocol.getBalanceVault() + protocol.getPendingProtocolFee();
+        assertEq(totalAfter, totalBefore, "reconciliation conserves long+vault+accrued-fee accounting");
     }
 }
