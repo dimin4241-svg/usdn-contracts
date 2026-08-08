@@ -1,0 +1,44 @@
+name: USDN LongFarming zero-share backlog PoC
+
+on:
+  push:
+    branches:
+      - security/usdn-long-farming-zero-share-backlog
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Clone exact upstream LongFarming revision
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git clone https://github.com/SmarDex-Ecosystem/usdn-long-farming.git /tmp/usdn-long-farming
+          cd /tmp/usdn-long-farming
+          git checkout cd5f5e1f693c53a73d869a275cbf960ce9540c79
+          test "$(git rev-parse HEAD)" = "cd5f5e1f693c53a73d869a275cbf960ce9540c79"
+
+      - name: Install exact upstream dependencies
+        working-directory: /tmp/usdn-long-farming
+        run: npm ci && forge soldeer install
+
+      - name: Copy security PoC only
+        run: |
+          cp "$GITHUB_WORKSPACE/security/usdn-long-farming/ZeroShareBacklog.t.sol" \
+            /tmp/usdn-long-farming/test/unit/UsdnLongFarming/ZeroShareBacklog.t.sol
+
+      - name: Zero-share idle backlog capture proof
+        working-directory: /tmp/usdn-long-farming
+        run: forge test --match-contract TestUsdnLongFarmingZeroShareBacklog -vvvv
