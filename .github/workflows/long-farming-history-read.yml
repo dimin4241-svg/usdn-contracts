@@ -19,7 +19,7 @@ jobs:
 
       - name: Reconstruct Deposit/Withdraw/Slash position-count timeline
         env:
-          RPC_URL: https://ethereum-rpc.publicnode.com
+          RPC_URL: https://ethereum-rpc.blockreq.com/v1/rpc/public
           LONG_FARMING: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
         run: |
           set -euo pipefail
