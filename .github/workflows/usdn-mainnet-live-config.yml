@@ -1,0 +1,33 @@
+name: USDN mainnet live config evidence
+
+on:
+  push:
+    branches:
+      - security/usdn-rounding-whole-dollar-vulnerable-validation
+
+permissions:
+  contents: read
+
+jobs:
+  live-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly-50dd4b8accae878391b0825885f0632d1e0a1e4c
+      - name: Read current in-scope proxy parameters
+        shell: bash
+        run: |
+          set -euxo pipefail
+          RPC=https://ethereum-rpc.publicnode.com
+          PROTOCOL=0x656cB8C6d154Aad29d8771384089be5B5141f01a
+          echo "block=$(cast block-number --rpc-url $RPC)"
+          echo "liquidationIteration=$(cast call $PROTOCOL 'getLiquidationIteration()(uint16)' --rpc-url $RPC)"
+          echo "lowLatencyValidatorDeadline=$(cast call $PROTOCOL 'getLowLatencyValidatorDeadline()(uint128)' --rpc-url $RPC)"
+          echo "onChainValidatorDeadline=$(cast call $PROTOCOL 'getOnChainValidatorDeadline()(uint128)' --rpc-url $RPC)"
+          echo "minLongPosition=$(cast call $PROTOCOL 'getMinLongPosition()(uint256)' --rpc-url $RPC)"
+          echo "closeExpoImbalanceLimitBps=$(cast call $PROTOCOL 'getCloseExpoImbalanceLimitBps()(int256)' --rpc-url $RPC)"
+          echo "safetyMarginBps=$(cast call $PROTOCOL 'getSafetyMarginBps()(uint256)' --rpc-url $RPC)"
+          echo "maxLeverage=$(cast call $PROTOCOL 'getMaxLeverage()(uint256)' --rpc-url $RPC)"
+          echo "rebalancer=$(cast call $PROTOCOL 'getRebalancer()(address)' --rpc-url $RPC)"
+          echo "implementationSlot=$(cast storage $PROTOCOL 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc --rpc-url $RPC)"
