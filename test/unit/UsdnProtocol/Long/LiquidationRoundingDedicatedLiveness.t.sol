@@ -2,6 +2,8 @@
 pragma solidity 0.8.26;
 
 import { TestLiquidationRoundingPostBootstrapRegression } from "./LiquidationRoundingPostBootstrapRegression.t.sol";
+import { IRebalancer } from "../../../../src/interfaces/Rebalancer/IRebalancer.sol";
+import { IUsdnProtocolTypes as Types } from "../../../../src/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
 
 /// @notice Focused liveness validation for the public dedicated liquidation endpoint.
 /// @dev The inherited fixture creates the fully post-bootstrap, ordinary-position witness using only public lifecycle
