@@ -1,0 +1,64 @@
+name: USDN liquidation history scan
+
+on:
+  push:
+    branches:
+      - security/usdn-mainnet-history
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan LiquidatedTick events and group multi-tick transactions
+        shell: bash
+        run: |
+          set -euo pipefail
+          RPC=https://eth.drpc.org
+          PROTOCOL=0x656cb8c6d154aad29d8771384089be5b5141f01a
+          TOPIC=0xb64624ffaac1b0226fccb859570380e00ddef038d67b89cd781c6fac2703a9a7
+          START=21600000
+          END=25710000
+          CHUNK=50000
+          : > /tmp/liqs.jsonl
+
+          for ((FROM=START; FROM<=END; FROM+=CHUNK)); do
+            TO=$((FROM+CHUNK-1)); if (( TO > END )); then TO=$END; fi
+            FH=$(printf '0x%x' "$FROM"); TH=$(printf '0x%x' "$TO")
+            PAYLOAD=$(jq -nc --arg a "$PROTOCOL" --arg f "$FH" --arg t "$TH" --arg topic "$TOPIC" \
+              '{jsonrpc:"2.0",id:1,method:"eth_getLogs",params:[{address:$a,fromBlock:$f,toBlock:$t,topics:[$topic]}]}')
+            RESP=$(curl -sS --max-time 25 -H 'content-type: application/json' --data "$PAYLOAD" "$RPC")
+            if [ "$(echo "$RESP" | jq -r 'has("result")')" != true ]; then
+              echo "RPC error for $FROM-$TO: $(echo "$RESP" | jq -c '.error // .')"
+              exit 1
+            fi
+            echo "$RESP" | jq -c '.result[]' >> /tmp/liqs.jsonl
+            sleep 0.08
+          done
+
+          TOTAL=$(wc -l < /tmp/liqs.jsonl | tr -d ' ')
+          echo "total LiquidatedTick events=$TOTAL"
+
+          jq -s '
+            sort_by(.transactionHash)
+            | group_by(.transactionHash)
+            | map(select(length > 1) | {
+                tx: .[0].transactionHash,
+                block: .[0].blockNumber,
+                count: length,
+                ticks: map(.topics[1]),
+                versions: map(.topics[2]),
+                data: map(.data)
+              })
+            | sort_by(.block)
+          ' /tmp/liqs.jsonl > /tmp/multi.json
+
+          COUNT=$(jq 'length' /tmp/multi.json)
+          echo "multi-tick transactions=$COUNT"
+          cat /tmp/multi.json
+
+          echo '--- concise ---'
+          jq -r '.[] | [.block,.count,.tx,(.ticks|join(","))] | @tsv' /tmp/multi.json
