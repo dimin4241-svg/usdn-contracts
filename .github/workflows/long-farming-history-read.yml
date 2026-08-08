@@ -27,7 +27,7 @@ jobs:
           export WDR_TOPIC=$(cast keccak 'Withdraw(address,int24,uint256,uint256)')
           export SLS_TOPIC=$(cast keccak 'Slash(address,uint256,uint256,int24,uint256,uint256)')
           python3 - <<'PY'
-          import os, json, urllib.request, time
+          import os, json, urllib.request
 
           rpc = os.environ['RPC_URL']
           addr = os.environ['LONG_FARMING'].lower()
@@ -41,7 +41,11 @@ jobs:
 
           def rpc_call(method, params):
               payload = json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode()
-              req = urllib.request.Request(rpc, data=payload, headers={'Content-Type':'application/json'})
+              req = urllib.request.Request(
+                  rpc,
+                  data=payload,
+                  headers={'Content-Type':'application/json', 'User-Agent':'Mozilla/5.0 USDN-security-readonly'}
+              )
               with urllib.request.urlopen(req, timeout=45) as r:
                   out = json.load(r)
               if 'error' in out:
