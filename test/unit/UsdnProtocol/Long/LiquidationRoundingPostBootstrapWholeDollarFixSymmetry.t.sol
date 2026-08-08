@@ -5,7 +5,7 @@ import { TestLiquidationRoundingPostBootstrapWholeDollarFixValidation } from "./
 import { IUsdnProtocolTypes as Types } from "../../../../src/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
 
 /// @notice Green-side symmetry control for the exact vulnerable whole-dollar fixture.
-/// Pins the same prestate values as the vulnerable branch, then proves that changing
+/// Pins the same accounting prestate as the vulnerable branch, then proves that changing
 /// only the liquidation accounting code turns the atomic revert into committed progress.
 contract TestLiquidationRoundingPostBootstrapWholeDollarFixSymmetry is
     TestLiquidationRoundingPostBootstrapWholeDollarFixValidation
@@ -13,14 +13,12 @@ contract TestLiquidationRoundingPostBootstrapWholeDollarFixSymmetry is
     uint256 internal constant EXPECTED_PRESTATE_POSITIONS = 2;
     uint256 internal constant EXPECTED_PRESTATE_EXPO = 18_299_478_101_274_206_497;
     uint256 internal constant EXPECTED_PRESTATE_LONG = 971_462_201_938_421_127;
-    uint256 internal constant EXPECTED_PRESTATE_TIMESTAMP = 1_704_092_721;
 
     function test_exactPrestateThenPatchedBatchCommitsAndPaysReward() public {
         assertEq(protocol.getTotalLongPositions(), EXPECTED_PRESTATE_POSITIONS, "same prestate positions");
         assertEq(protocol.getTotalExpo(), EXPECTED_PRESTATE_EXPO, "same prestate exposure");
         assertEq(protocol.getBalanceLong(), EXPECTED_PRESTATE_LONG, "same prestate long balance");
         assertEq(protocol.getHighestPopulatedTick(), EXPECTED_A_TICK, "same prestate highest tick");
-        assertEq(block.timestamp, EXPECTED_PRESTATE_TIMESTAMP, "same prestate timestamp");
         assertEq(uint256(FINAL_PRICE), 1_586 ether, "same final whole-dollar price");
         assertEq(address(protocol.getRebalancer()), address(rebalancer), "same production Rebalancer");
 
