@@ -20,7 +20,6 @@ contract TestHistoricalMainnetLiquidationReachability is Test {
     string internal constant ARCHIVE_RPC = "https://eth.drpc.org";
     uint256 internal constant FORK_BLOCK = 25_240_928;
 
-    // Exact liquidationPrice emitted by both real LiquidatedTick events.
     uint256 internal constant REAL_LIQUIDATION_PRICE = 2_129_347_370_674_453_391_094;
 
     IUsdnProtocol internal protocol;
@@ -28,8 +27,6 @@ contract TestHistoricalMainnetLiquidationReachability is Test {
 
     function setUp() public {
         vm.createSelectFork(ARCHIVE_RPC, FORK_BLOCK);
-        // Advance one normal Ethereum block so funding/timestamp semantics are
-        // aligned with the immediately following real liquidation block.
         vm.warp(block.timestamp + 12);
 
         protocol = IUsdnProtocol(PROTOCOL);
@@ -44,7 +41,6 @@ contract TestHistoricalMainnetLiquidationReachability is Test {
         console2.log("positions", protocol.getTotalLongPositions());
         console2.log("highest tick", int256(protocol.getHighestPopulatedTick()));
 
-        // Independent archive-RPC values captured before building this fork.
         assertEq(protocol.getLastPrice(), 2_172_386_083_548_588_700_245, "historical lastPrice mismatch");
         assertEq(protocol.getTotalExpo(), 580_162_335_058_503_923_346, "historical totalExpo mismatch");
         assertEq(protocol.getBalanceLong(), 165_175_187_079_186_674_402, "historical balanceLong mismatch");
@@ -109,9 +105,16 @@ contract TestHistoricalMainnetLiquidationReachability is Test {
         }
     }
 
-    /// @dev Sanity control: the exact price emitted by the real next-block
-    /// transaction should select the same two highest populated ticks.
+    /// @dev The exact price emitted by the real next-block transaction should
+    /// select the same two highest populated ticks. LiqTickInfo itself does not
+    /// carry the tick number, so tick identity is proven by enumerating the
+    /// pre-state and checking the resulting highest populated tick.
     function test_A_exactRealPriceReproducesHistoricalTwoTickBatch() public {
+        (int24[] memory populated, uint256 tickCount,) = _populatedTicks();
+        assertGe(tickCount, 3, "historical state needs at least three populated ticks");
+        assertEq(populated[0], 76_000, "historical top tick mismatch");
+        assertEq(populated[1], 75_900, "historical second tick mismatch");
+
         (bool ok, bytes4 sel, Types.LiqTickInfo[] memory ticks) = _callLiquidate(REAL_LIQUIDATION_PRICE);
         if (!ok) {
             console2.log("real-price call reverted");
@@ -119,19 +122,15 @@ contract TestHistoricalMainnetLiquidationReachability is Test {
         }
         assertTrue(ok, "real historical liquidation price must succeed on pre-state");
         assertEq(ticks.length, 2, "real historical price must liquidate exactly two ticks");
-        assertEq(ticks[0].tick, 76_000, "first historical tick mismatch");
-        assertEq(ticks[1].tick, 75_900, "second historical tick mismatch");
+        assertEq(protocol.getHighestPopulatedTick(), populated[2], "two highest historical ticks were not removed");
 
         console2.log("real price reproduced two-tick batch");
+        console2.log("removed top ticks", int256(populated[0]), int256(populated[1]));
+        console2.log("new highest tick", int256(protocol.getHighestPopulatedTick()));
         console2.log("tick0 remaining collateral", ticks[0].remainingCollateral);
         console2.log("tick1 remaining collateral", ticks[1].remainingCollateral);
     }
 
-    /// @dev From the exact historical production snapshot, target every live
-    /// populated-tick boundary. Repeated public liquidation at one price lets
-    /// the deployed protocol perform its natural 10+10+...+final batching.
-    /// Any InvalidLongExpo hit is direct historical production-state
-    /// reachability, not a synthetic state construction.
     function test_B_scanAllHistoricalLiveTickBoundaries() public {
         (int24[] memory populated, uint256 tickCount, uint256 countedPositions) = _populatedTicks();
         assertEq(countedPositions, protocol.getTotalLongPositions(), "failed to enumerate historical positions");
