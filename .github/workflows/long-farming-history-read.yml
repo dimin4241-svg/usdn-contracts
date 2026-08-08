@@ -27,7 +27,7 @@ jobs:
           export WDR_TOPIC=$(cast keccak 'Withdraw(address,int24,uint256,uint256)')
           export SLS_TOPIC=$(cast keccak 'Slash(address,uint256,uint256,int24,uint256,uint256)')
           python3 - <<'PY'
-          import os, json, urllib.request
+          import os, json, subprocess
 
           rpc = os.environ['RPC_URL']
           addr = os.environ['LONG_FARMING'].lower()
@@ -35,24 +35,23 @@ jobs:
           wdr = os.environ['WDR_TOPIC'].lower()
           sls = os.environ['SLS_TOPIC'].lower()
 
-          # Campaign 20 starts at 21,683,491. Positive emissions end at 25,056,370.
           lo, hi = 21_683_491, 25_056_370
           chunk = 40_000
 
           def rpc_call(method, params):
-              payload = json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode()
-              req = urllib.request.Request(
-                  rpc,
-                  data=payload,
-                  headers={'Content-Type':'application/json', 'User-Agent':'Mozilla/5.0 USDN-security-readonly'}
-              )
-              with urllib.request.urlopen(req, timeout=45) as r:
-                  out = json.load(r)
-              if 'error' in out:
-                  raise RuntimeError(out['error'])
-              return out['result']
+              args = ['cast','rpc','--rpc-url',rpc,method]
+              for p in params:
+                  if isinstance(p, (dict,list)):
+                      args.append(json.dumps(p,separators=(',',':')))
+                  else:
+                      args.append(str(p))
+              raw = subprocess.check_output(args, text=True, stderr=subprocess.STDOUT).strip()
+              # cast rpc prints the JSON-RPC result itself.
+              try:
+                  return json.loads(raw)
+              except json.JSONDecodeError:
+                  return raw.strip('"')
 
-          # Find first block with deployed code to bound the event reconstruction.
           a, b = lo, hi
           if rpc_call('eth_getCode', [addr, hex(b)]) == '0x':
               raise RuntimeError('LongFarming not deployed by end of positive-emission history')
