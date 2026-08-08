@@ -54,7 +54,10 @@ contract TestLiquidationRoundingPostBootstrapCoarseFuzz is UsdnProtocolBaseFixtu
         uint16 gapARaw,
         uint16 gapBRaw
     ) public {
-        uint256 supportDesired = bound(uint256(supportDesiredRaw), 1650, 1850);
+        // <= 1800 is deliberately inside the fixture's production max-leverage
+        // envelope at a $2000 entry price. Invalid opens must not terminate the
+        // search and masquerade as a rounding counterexample.
+        uint256 supportDesired = bound(uint256(supportDesiredRaw), 1650, 1800);
         uint256 gapA = bound(uint256(gapARaw), 20, 140);
         uint256 gapB = bound(uint256(gapBRaw), 20, 140);
         if (supportDesired <= gapA + gapB + 1200) return;
