@@ -29,20 +29,25 @@ jobs:
           rpc = os.environ['RPC_URL']
           addr = os.environ['LONG_FARMING']
           lo, hi = 21_683_491, 25_056_370
-          chunk = 20_000
+          chunk = 9_999
 
           events = {
-              'Deposit': 'Deposit(address,int24,uint256,uint256)',
-              'Withdraw': 'Withdraw(address,int24,uint256,uint256)',
-              'Slash': 'Slash(address,uint256,uint256,int24,uint256,uint256)',
+              'Deposit': 'Deposit(address indexed owner,int24 tick,uint256 tickVersion,uint256 index)',
+              'Withdraw': 'Withdraw(address indexed owner,int24 tick,uint256 tickVersion,uint256 index)',
+              'Slash': 'Slash(address indexed notifier,uint256 notifierRewards,uint256 ownerRewards,int24 tick,uint256 tickVersion,uint256 index)',
           }
 
-          def get_logs(sig, start, end):
+          def get_logs(kind, sig, start, end):
               cmd = [
                   'cast','logs','--json','--rpc-url',rpc,'--address',addr,
                   '--from-block',str(start),'--to-block',str(end),sig
               ]
-              raw = subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT).strip()
+              try:
+                  raw = subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT).strip()
+              except subprocess.CalledProcessError as e:
+                  print('CAST_LOGS_FAILURE',kind,start,end)
+                  print(e.output)
+                  raise
               return json.loads(raw) if raw else []
 
           logs=[]
@@ -50,7 +55,7 @@ jobs:
               end=min(start+chunk-1,hi)
               n=0
               for kind,sig in events.items():
-                  batch=get_logs(sig,start,end)
+                  batch=get_logs(kind,sig,start,end)
                   for x in batch:
                       x['_kind']=kind
                   logs.extend(batch)
