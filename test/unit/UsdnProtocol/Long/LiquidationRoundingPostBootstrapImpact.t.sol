@@ -6,10 +6,10 @@ import { UsdnProtocolBaseFixture } from "../utils/Fixtures.sol";
 import { IRebalancer } from "../../../../src/interfaces/Rebalancer/IRebalancer.sol";
 import { IUsdnProtocolTypes as Types } from "../../../../src/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
 
-/// @notice Escrow-impact extension of the fully post-bootstrap ordinary-position
-/// rounding witness. The victim withdrawal is initiated only after bootstrap
-/// accounting has reached 0/0/0, and before any of the later witness positions
-/// are created.
+/// @notice Impact extension of the fully post-bootstrap ordinary-position rounding witness.
+/// The source state is created only through the public lifecycle. The focused impact tests opt into
+/// fresh-Pyth semantics for Initiate* calls because production OracleMiddleware routes both Liquidation
+/// and Initiate* Pyth updates through _getLowLatencyPrice(..., actionTimestamp = 0).
 contract TestLiquidationRoundingPostBootstrapImpact is UsdnProtocolBaseFixture {
     uint128 internal constant ENTRY_PRICE = 2000 ether;
     uint128 internal constant BOOTSTRAP_LIQ_PRICE = 980 ether;
@@ -20,6 +20,7 @@ contract TestLiquidationRoundingPostBootstrapImpact is UsdnProtocolBaseFixture {
     address internal constant SUPPORT_USER = address(0xCAFE);
     address internal constant USER_A = address(0xBEEF);
     address internal constant USER_B = address(0xD00D);
+    address internal constant DEPOSITOR = address(0xA11CE);
 
     PositionId internal supportPos;
     PositionId internal posA;
@@ -44,6 +45,7 @@ contract TestLiquidationRoundingPostBootstrapImpact is UsdnProtocolBaseFixture {
         vm.deal(SUPPORT_USER, 10 ether);
         vm.deal(USER_A, 10 ether);
         vm.deal(USER_B, 10 ether);
+        vm.deal(DEPOSITOR, 10 ether);
         vm.deal(DEPLOYER, 10 ether);
         super._setUp(params);
 
@@ -67,10 +69,9 @@ contract TestLiquidationRoundingPostBootstrapImpact is UsdnProtocolBaseFixture {
         assertEq(protocol.getTotalExpo(), 0, "zero expo before escrow");
         assertEq(protocol.getBalanceLong(), 0, "zero long balance before escrow");
 
-        // Escrow 0.1% of the original depositor's shares while long accounting
-        // is completely empty. This is intentionally small so the pending-vault
-        // reservation cannot be mistaken for the source of the later long-side
-        // rounding condition.
+        // Escrow 0.1% of the original depositor's shares while long accounting is completely empty.
+        // This pending withdrawal is not used as the primary impact claim; it is retained as an
+        // orthogonal control that a failed dedicated liquidation rolls back unrelated user state.
         uint256 deployerShares = usdn.sharesOf(DEPLOYER);
         uint256 shares = deployerShares / 1000;
         require(shares > 0 && shares <= type(uint152).max, "invalid victim shares");
@@ -137,8 +138,7 @@ contract TestLiquidationRoundingPostBootstrapImpact is UsdnProtocolBaseFixture {
         _waitDelay();
 
         uint256 supportBoundary = protocol.getEffectivePriceForTick(supportPos.tick);
-        Types.LiqTickInfo[] memory supportTicks =
-            protocol.liquidate(abi.encode(uint128(supportBoundary - 1)));
+        Types.LiqTickInfo[] memory supportTicks = protocol.liquidate(abi.encode(uint128(supportBoundary - 1)));
         assertEq(supportTicks.length, 1, "support-only liquidation");
         assertGt(supportTicks[0].remainingCollateral, 0, "support is not bad debt");
         assertEq(protocol.getTotalLongPositions(), 2, "two final ordinary positions remain");
@@ -175,30 +175,117 @@ contract TestLiquidationRoundingPostBootstrapImpact is UsdnProtocolBaseFixture {
         assertGe(usdn.sharesOf(address(protocol)), victimShares, "victim shares remain escrowed");
     }
 
-    function test_C_firstPermissionlessValidationCommitsOneTickButPaysNothing() public {
-        uint256 assetBefore = wstETH.balanceOf(DEPLOYER);
-        uint256 escrowBefore = usdn.sharesOf(address(protocol));
+    function test_C_firstDepositAttemptCommitsOneTickThenRetryRevertsPersistently() public {
+        // Production OracleMiddleware accepts the same recent Pyth publishTime for Liquidation and
+        // InitiateDeposit. Align the unit mock with that production path for this focused test.
+        oracleMiddleware.setUseRecentTimestampForInitiate(true);
+        assertTrue(oracleMiddleware.useRecentTimestampForInitiate(), "fresh initiate timestamp enabled");
 
-        bool first = protocol.validateWithdrawal(payable(DEPLOYER), abi.encode(finalPrice), EMPTY_PREVIOUS_DATA);
-        assertFalse(first, "first validation stops on one pending liquidation tick");
-        assertEq(wstETH.balanceOf(DEPLOYER), assetBefore, "no underlying paid on first validation");
-        assertEq(usdn.sharesOf(address(protocol)), escrowBefore, "shares stay escrowed after first validation");
-        assertEq(protocol.getTotalLongPositions(), 1, "exactly one ordinary tick committed");
+        uint128 depositAmount = 2 ether;
+        wstETH.mintAndApprove(DEPOSITOR, depositAmount, address(protocol), depositAmount);
+        uint256 depositorAssetBefore = wstETH.balanceOf(DEPOSITOR);
+        uint256 securityDeposit = protocol.getSecurityDepositValue();
 
-        PendingAction memory pending = protocol.getUserPendingAction(DEPLOYER);
-        assertEq(uint256(pending.action), uint256(ProtocolAction.ValidateWithdrawal), "withdrawal still pending");
+        // At this exact block the fresh initiate timestamp is block.timestamp - 30 seconds,
+        // identical to the dedicated liquidation timestamp that reproduces the source boundary.
+        vm.prank(DEPOSITOR);
+        bool first = protocol.initiateDeposit{ value: securityDeposit }(
+            depositAmount,
+            0,
+            DEPOSITOR,
+            payable(DEPOSITOR),
+            type(uint256).max,
+            abi.encode(finalPrice),
+            EMPTY_PREVIOUS_DATA
+        );
+
+        assertFalse(first, "first user action is consumed by pending liquidation");
+        assertEq(protocol.getTotalLongPositions(), 1, "first action commits exactly one liquidation tick");
+        assertEq(protocol.getHighestPopulatedTick(), posB.tick, "only final B tick remains");
+        assertEq(wstETH.balanceOf(DEPOSITOR), depositorAssetBefore, "failed initiation takes no depositor asset");
+        PendingAction memory noDeposit = protocol.getUserPendingAction(DEPOSITOR);
+        assertEq(uint256(noDeposit.action), uint256(ProtocolAction.None), "deposit was not initiated");
+
+        uint256 longBalanceAfterFirst = protocol.getBalanceLong();
+        uint256 totalExpoAfterFirst = protocol.getTotalExpo();
+        assertGt(totalExpoAfterFirst, 0, "one valid position still remains");
+        assertLe(longBalanceAfterFirst, totalExpoAfterFirst, "state remains representable after first partial step");
+
+        // The next normal user attempt reaches the last tick. Its transaction must roll back because
+        // the aggregate-vs-per-tick rounding residue makes the production Rebalancer invariant fail.
+        vm.startPrank(DEPOSITOR);
+        vm.expectRevert(UsdnProtocolInvalidLongExpo.selector);
+        protocol.initiateDeposit{ value: securityDeposit }(
+            depositAmount,
+            0,
+            DEPOSITOR,
+            payable(DEPOSITOR),
+            type(uint256).max,
+            abi.encode(finalPrice),
+            EMPTY_PREVIOUS_DATA
+        );
+        vm.stopPrank();
+
+        assertEq(protocol.getTotalLongPositions(), 1, "reverted retry cannot clear final tick");
+        assertEq(protocol.getBalanceLong(), longBalanceAfterFirst, "reverted retry preserves long balance");
+        assertEq(protocol.getTotalExpo(), totalExpoAfterFirst, "reverted retry preserves exposure");
+        assertEq(wstETH.balanceOf(DEPOSITOR), depositorAssetBefore, "reverted retry takes no depositor asset");
+
+        // Retrying is not a recovery mechanism: with no intervening state change the final liquidation
+        // deterministically hits the same invariant again.
+        vm.startPrank(DEPOSITOR);
+        vm.expectRevert(UsdnProtocolInvalidLongExpo.selector);
+        protocol.initiateDeposit{ value: securityDeposit }(
+            depositAmount,
+            0,
+            DEPOSITOR,
+            payable(DEPOSITOR),
+            type(uint256).max,
+            abi.encode(finalPrice),
+            EMPTY_PREVIOUS_DATA
+        );
+        vm.stopPrank();
+
+        assertEq(protocol.getTotalLongPositions(), 1, "final tick remains stuck across retries");
     }
 
-    function test_D_secondPermissionlessValidationCompletesWithdrawal() public {
-        uint256 assetBefore = wstETH.balanceOf(DEPLOYER);
+    function test_D_withoutRebalancerSameTwoStepPathEndsAtExactOneWei() public {
+        oracleMiddleware.setUseRecentTimestampForInitiate(true);
 
-        bool first = protocol.validateWithdrawal(payable(DEPLOYER), abi.encode(finalPrice), EMPTY_PREVIOUS_DATA);
-        assertFalse(first, "first validation processes one tick");
-        bool second = protocol.validateWithdrawal(payable(DEPLOYER), abi.encode(finalPrice), EMPTY_PREVIOUS_DATA);
-        assertTrue(second, "second one-tick validation completes withdrawal");
+        uint128 depositAmount = 2 ether;
+        wstETH.mintAndApprove(DEPOSITOR, depositAmount, address(protocol), depositAmount);
+        uint256 securityDeposit = protocol.getSecurityDepositValue();
 
-        PendingAction memory pending = protocol.getUserPendingAction(DEPLOYER);
-        assertEq(uint256(pending.action), uint256(ProtocolAction.None), "withdrawal cleared");
-        assertGt(wstETH.balanceOf(DEPLOYER), assetBefore, "victim receives underlying");
+        vm.prank(DEPOSITOR);
+        bool first = protocol.initiateDeposit{ value: securityDeposit }(
+            depositAmount,
+            0,
+            DEPOSITOR,
+            payable(DEPOSITOR),
+            type(uint256).max,
+            abi.encode(finalPrice),
+            EMPTY_PREVIOUS_DATA
+        );
+        assertFalse(first, "first step clears one tick only");
+        assertEq(protocol.getTotalLongPositions(), 1, "one tick remains before control");
+
+        vm.prank(managers.setExternalManager);
+        protocol.setRebalancer(IRebalancer(address(0)));
+
+        vm.prank(DEPOSITOR);
+        bool second = protocol.initiateDeposit{ value: securityDeposit }(
+            depositAmount,
+            0,
+            DEPOSITOR,
+            payable(DEPOSITOR),
+            type(uint256).max,
+            abi.encode(finalPrice),
+            EMPTY_PREVIOUS_DATA
+        );
+
+        assertTrue(second, "removing only the production sink lets final liquidation finish");
+        assertEq(protocol.getTotalLongPositions(), 0, "final tick removed");
+        assertEq(protocol.getTotalExpo(), 0, "all exposure removed");
+        assertEq(protocol.getBalanceLong(), 1, "same exact one-wei source residue after sequential user path");
     }
 }
