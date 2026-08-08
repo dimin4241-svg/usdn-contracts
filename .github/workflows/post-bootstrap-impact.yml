@@ -1,9 +1,9 @@
-name: USDN post-bootstrap escrow impact
+name: USDN fresh-Pyth user-action impact validation
 
 on:
   push:
     branches:
-      - security/usdn-post-bootstrap-impact
+      - security/usdn-rounding-impact-fresh-pyth-validation
 
 permissions:
   contents: read
@@ -22,5 +22,9 @@ jobs:
         with:
           node-version: 20
       - run: npm ci && forge soldeer install
-      - name: Run post-bootstrap escrow impact regression
+      - name: Run fresh-Pyth user-action impact regression
         run: forge test --match-contract TestLiquidationRoundingPostBootstrapImpact -vvvv
+      - name: Run upstream liquidation regression suite
+        run: forge test --match-path 'test/unit/UsdnProtocol/Long/_LiquidatePositions.t.sol' -vvvv
+      - name: Run upstream Rebalancer invariant suite
+        run: forge test --match-path 'test/unit/UsdnProtocol/Long/_TriggerRebalancer.t.sol' -vvvv
