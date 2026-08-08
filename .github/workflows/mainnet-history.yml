@@ -11,6 +11,8 @@ permissions:
 jobs:
   history:
     runs-on: ubuntu-latest
+    env:
+      FOUNDRY_DISABLE_NIGHTLY_WARNING: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
@@ -28,7 +30,9 @@ jobs:
             local RPC=$1 LABEL=$2 SIG=$3 BLOCK=$4
             local OUT
             OUT=$(timeout 10s cast call "$PROTOCOL" "$SIG" --block "$BLOCK" --rpc-url "$RPC" 2>&1 || true)
-            OUT=$(echo "$OUT" | tr '\n' ' ' | head -c 700)
+            OUT=${OUT//$'\n'/ }
+            OUT=${OUT:0:600}
+            if [ -z "$OUT" ]; then OUT='<empty/timeout>'; fi
             echo "::notice title=${LABEL}::${OUT}"
           }
 
