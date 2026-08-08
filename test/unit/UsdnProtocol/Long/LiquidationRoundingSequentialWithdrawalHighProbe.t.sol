@@ -68,9 +68,13 @@ contract TestLiquidationRoundingSequentialWithdrawalHighProbe is TestLiquidation
 
         _waitDelay();
 
-        // Force both remaining ordinary ticks below the market in the normal validation flow.
-        // This price is recomputed after the real withdrawal initiation.
-        uint128 crashPrice = uint128(protocol.getEffectivePriceForTick(posB.tick) - 1);
+        // Keep both remaining ticks liquidatable even after validateWithdrawal() applies its
+        // production funding update internally. The previous boundary-minus-1-wei input was
+        // too tight: the internal funding move raised the effective long price enough that
+        // tick B stopped being eligible and the withdrawal completed normally.
+        uint128 tickBBoundary = uint128(protocol.getEffectivePriceForTick(posB.tick));
+        uint128 crashPrice = tickBBoundary - uint128(1 ether);
+        assertLt(crashPrice, tickBBoundary, "crash price below final tick");
         assertLt(crashPrice, protocol.getEffectivePriceForTick(posA.tick), "tick A must also be liquidatable");
 
         uint256 aVersionBefore = protocol.getTickVersion(posA.tick);
@@ -93,7 +97,7 @@ contract TestLiquidationRoundingSequentialWithdrawalHighProbe is TestLiquidation
         );
 
         // Second validation reaches the final tick. If sequential processing preserves the
-        // known floor-rounding residue, this is the first point where Rebalancer is invoked.
+        // rounding residue, this is the first point where Rebalancer is invoked.
         vm.prank(VICTIM);
         vm.expectRevert(IUsdnProtocolErrors.UsdnProtocolInvalidLongExpo.selector);
         protocol.validateWithdrawal(payable(VICTIM), abi.encode(crashPrice), EMPTY_PREVIOUS_DATA);
