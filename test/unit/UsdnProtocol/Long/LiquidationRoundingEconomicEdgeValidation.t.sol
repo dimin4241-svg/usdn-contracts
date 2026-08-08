@@ -36,9 +36,14 @@ contract TestLiquidationRoundingEconomicEdgeValidation is UsdnProtocolBaseFixtur
         assertEq(protocol.getRebalancerBonusBps(), 8000, "production Rebalancer bonus");
     }
 
-    /// @notice The production-like bootstrap position is deeply underwater at $980 and its raw
-    /// tick collateral is negative. Arm the real Rebalancer inside the two delays already used by
-    /// the witness and prove that this negative value cannot be turned into a bonus-bearing payout.
+    /// @notice The production-like bootstrap position is underwater on the actual public $980
+    /// liquidation path. Arm the real Rebalancer inside the two standard validation delays and
+    /// prove that a negative LiqTickInfo.remainingCollateral cannot become a bonus-bearing payout.
+    ///
+    /// We intentionally do not pre-compute the value through `tickValue()`: that view helper uses
+    /// the current block timestamp for funding, while the public liquidation uses the timestamp
+    /// returned by the oracle middleware. The returned LiqTickInfo is the authoritative value for
+    /// the path that actually reaches `_triggerRebalancer`.
     function test_A_negativeRawCollateralDoesNotCreateRebalancerBonus() public {
         wstETH.mintAndApprove(
             REBALANCER_DEPOSITOR, PENDING_ASSETS, address(rebalancer), type(uint256).max
@@ -52,9 +57,6 @@ contract TestLiquidationRoundingEconomicEdgeValidation is UsdnProtocolBaseFixtur
         assertEq(rebalancer.getPendingAssetsAmount(), PENDING_ASSETS, "pending assets armed");
         _waitDelay();
 
-        int256 rawTickCollateral = protocol.tickValue(initialPosition.tick, BOOTSTRAP_LIQ_PRICE);
-        assertLt(rawTickCollateral, 0, "fixture must exercise negative raw collateral");
-
         uint256 physicalBefore = wstETH.balanceOf(address(protocol)) + wstETH.balanceOf(address(rebalancer))
             + wstETH.balanceOf(PUBLIC_LIQUIDATOR);
 
@@ -62,7 +64,7 @@ contract TestLiquidationRoundingEconomicEdgeValidation is UsdnProtocolBaseFixtur
         Types.LiqTickInfo[] memory ticks = protocol.liquidate(abi.encode(BOOTSTRAP_LIQ_PRICE));
 
         assertEq(ticks.length, 1, "bootstrap batch must liquidate one tick");
-        assertLt(ticks[0].remainingCollateral, 0, "returned raw tick collateral stays negative");
+        assertLt(ticks[0].remainingCollateral, 0, "public liquidation must exercise negative raw collateral");
         assertEq(rebalancer.getPendingAssetsAmount(), 0, "pending principal consumed by Rebalancer");
 
         (,, Types.PositionId memory rebalancerPosId) = rebalancer.getCurrentStateData();
