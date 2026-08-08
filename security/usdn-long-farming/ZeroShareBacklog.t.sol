@@ -3,7 +3,7 @@ pragma solidity ^0.8.26;
 
 import { IUsdnProtocolTypes } from "@smardex-usdn-contracts/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
 
-import { USER_1 } from "../../test/utils/Constants.sol";
+import { USER_1 } from "../../utils/Constants.sol";
 import { UsdnLongFarmingBaseFixture } from "./utils/Fixtures.sol";
 
 /**
