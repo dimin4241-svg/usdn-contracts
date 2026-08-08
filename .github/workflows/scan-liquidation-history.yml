@@ -22,7 +22,7 @@ jobs:
           TOPIC=0xb64624ffaac1b0226fccb859570380e00ddef038d67b89cd781c6fac2703a9a7
           START=21600000
           END=25710000
-          CHUNK=50000
+          CHUNK=10000
           : > /tmp/liqs.jsonl
 
           for ((FROM=START; FROM<=END; FROM+=CHUNK)); do
@@ -36,7 +36,7 @@ jobs:
               exit 1
             fi
             echo "$RESP" | jq -c '.result[]' >> /tmp/liqs.jsonl
-            sleep 0.08
+            sleep 0.05
           done
 
           TOTAL=$(wc -l < /tmp/liqs.jsonl | tr -d ' ')
