@@ -71,9 +71,9 @@ contract TestCurrentMainnetLiquidationReachability is Test {
         ticks_ = abi.decode(data, (Types.LiqTickInfo[]));
     }
 
-    /// @dev Reconstruct populated ticks from the real bitmap-backed state by
-    /// reading TickData at the protocol's production tick spacing. The scan
-    /// stops as soon as the summed positions equal getTotalLongPositions().
+    /// @dev Enumerates the real populated ticks from the live fork. Ticks are
+    /// returned in descending order. The sum of TickData.totalPos must equal
+    /// the protocol's live totalLongPositions count.
     function _currentPopulatedTicks()
         internal
         view
@@ -95,14 +95,15 @@ contract TestCurrentMainnetLiquidationReachability is Test {
         }
     }
 
-    /// @dev For each possible final public batch size 2..10, start from the
-    /// identical live mainnet snapshot. Higher ticks are deliberately cleared
-    /// one tick at a time by pricing exactly below the current highest tick's
-    /// effective liquidation boundary. That path uses the protocol's own
-    /// one-tick-safe accounting. The final k populated ticks are then cleared
-    /// together in one dedicated liquidate(), which directly exercises the
-    /// vulnerable independent per-tick rounding + production Rebalancer sink.
-    function test_targetEveryFinalBatchSizeFromCurrentMainnetState() public {
+    /// @dev Production-faithful batching probe. Candidate j chooses a price one
+    /// wei below the effective liquidation boundary of live populated tick j.
+    /// Starting from the identical current-mainnet snapshot, that makes the
+    /// top j+1 ticks liquidatable. Repeated public liquidate() calls therefore
+    /// exercise the protocol's real MAX_LIQUIDATION_ITERATION batching
+    /// (10 + 10 + ... + final remainder). Rebalancer is left untouched and can
+    /// only run once no higher liquidations remain, exactly where the reported
+    /// InvalidLongExpo sink is reached.
+    function test_everyCurrentLiveTickBoundaryWithProductionBatching() public {
         (int24[] memory populated, uint256 tickCount, uint256 countedPositions) = _currentPopulatedTicks();
         uint256 initialPositions = protocol.getTotalLongPositions();
 
@@ -112,90 +113,94 @@ contract TestCurrentMainnetLiquidationReachability is Test {
         assertGt(tickCount, 1, "need at least two live ticks");
 
         uint256 rootSnapshot = vm.snapshotState();
-        uint256 maxFinal = tickCount < 10 ? tickCount : 10;
+        bool sawTwoTickFinal;
+        bool sawThreePlusFinal;
 
-        for (uint256 finalSize = 2; finalSize <= maxFinal; ++finalSize) {
+        // j=1 starts with exactly two live ticks eligible. Larger j naturally
+        // exercises final remainders after one or more full 10-tick batches.
+        for (uint256 j = 1; j < tickCount; ++j) {
             vm.revertToState(rootSnapshot);
             rootSnapshot = vm.snapshotState();
 
-            uint256 liveTickCount = tickCount;
-            bool candidateAborted;
+            int24 boundaryTick = populated[j];
+            uint256 boundary = protocol.getEffectivePriceForTick(boundaryTick);
+            uint256 price = boundary > 1 ? boundary - 1 : boundary;
+            uint256 expectedEligible = j + 1;
+            uint256 cumulativeTicks;
+            uint256 batchIndex;
+            uint256 finalBatchSize;
+            bool candidateDone;
 
-            // Clear only the highest tick at each step. Since the chosen price
-            // is one wei below that tick's own effective boundary and the next
-            // populated tick is lower, this normally returns exactly one tick.
-            while (liveTickCount > finalSize) {
-                int24 highest = protocol.getHighestPopulatedTick();
-                uint256 boundary = protocol.getEffectivePriceForTick(highest);
-                uint256 price = boundary > 1 ? boundary - 1 : boundary;
-
+            // With 26 live ticks four calls are enough (10+10+6). Keep five
+            // for margin if the live state changes between CI runs.
+            for (; batchIndex < 5; ++batchIndex) {
                 (bool ok, bytes4 sel, Types.LiqTickInfo[] memory removed) = _callLiquidate(price);
+
                 if (!ok) {
                     if (sel == IUsdnProtocolErrors.UsdnProtocolInvalidLongExpo.selector) {
-                        console2.log("CURRENT MAINNET HIT DURING ONE-TICK PREPARATION");
-                        console2.log("target final size", finalSize);
-                        console2.log("live ticks before revert", liveTickCount);
+                        console2.log("CURRENT MAINNET INVALID_LONG_EXPO HIT");
+                        console2.log("boundary tick", int256(boundaryTick));
+                        console2.log("candidate price", price);
+                        console2.log("expected initially eligible ticks", expectedEligible);
+                        console2.log("successful ticks before failing batch", cumulativeTicks);
+                        console2.log("failing batch index", batchIndex);
+                        console2.log("totalExpo before failing batch", protocol.getTotalExpo());
+                        console2.log("balanceLong before failing batch", protocol.getBalanceLong());
                         return;
                     }
-                    console2.log("preparation reverted with other selector");
-                    console2.log("target final size", finalSize);
+
+                    console2.log("candidate other revert");
+                    console2.log("boundary tick", int256(boundaryTick));
+                    console2.log("candidate price", price);
                     console2.logBytes4(sel);
-                    candidateAborted = true;
+                    candidateDone = true;
                     break;
                 }
-                if (removed.length == 0 || removed.length > liveTickCount) {
-                    candidateAborted = true;
+
+                if (removed.length == 0) {
+                    candidateDone = true;
                     break;
                 }
-                liveTickCount -= removed.length;
-                if (liveTickCount < finalSize) {
-                    // Two liquidation boundaries collapsed into the same call;
-                    // this target size cannot be isolated on this path.
-                    candidateAborted = true;
+
+                cumulativeTicks += removed.length;
+                finalBatchSize = removed.length;
+
+                // Once all ticks that were expected to be above this price have
+                // been processed, this call is the final initial-state batch;
+                // the production Rebalancer sink has already executed if no
+                // liquidation remains pending.
+                if (cumulativeTicks >= expectedEligible) {
+                    candidateDone = true;
                     break;
                 }
             }
 
-            if (candidateAborted || liveTickCount != finalSize) continue;
-
-            // Because all removals above were from the top, the lowest live tick
-            // is the lowest tick from the original live set. Pricing one wei
-            // below its current effective threshold makes every remaining tick
-            // liquidatable in this final call (finalSize <= public max 10).
-            int24 lowestRemaining = populated[tickCount - 1];
-            uint256 finalBoundary = protocol.getEffectivePriceForTick(lowestRemaining);
-            uint256 finalPrice = finalBoundary > 1 ? finalBoundary - 1 : finalBoundary;
-
-            uint256 expoBefore = protocol.getTotalExpo();
-            uint256 longBefore = protocol.getBalanceLong();
-            (bool okFinal, bytes4 finalSel, Types.LiqTickInfo[] memory finalTicks) = _callLiquidate(finalPrice);
-
-            if (!okFinal && finalSel == IUsdnProtocolErrors.UsdnProtocolInvalidLongExpo.selector) {
-                console2.log("CURRENT MAINNET INVALID_LONG_EXPO HIT");
-                console2.log("final batch size", finalSize);
-                console2.log("final price", finalPrice);
-                console2.log("totalExpo before final batch", expoBefore);
-                console2.log("balanceLong before final batch", longBefore);
-                console2.log("lowest remaining tick", int256(lowestRemaining));
-                return;
-            }
-
-            if (!okFinal) {
-                console2.log("final batch other revert");
-                console2.log("final batch size", finalSize);
-                console2.logBytes4(finalSel);
+            if (!candidateDone) {
+                console2.log("candidate exceeded batch budget");
+                console2.log("boundary tick", int256(boundaryTick));
                 continue;
             }
 
-            console2.log("final batch succeeded");
-            console2.log("requested final tick count", finalSize);
-            console2.log("ticks actually liquidated", finalTicks.length);
-            console2.log("final price", finalPrice);
-            console2.log("remaining positions", protocol.getTotalLongPositions());
-            console2.log("remaining totalExpo", protocol.getTotalExpo());
-            console2.log("remaining balanceLong", protocol.getBalanceLong());
+            if (cumulativeTicks == expectedEligible) {
+                if (finalBatchSize == 2) sawTwoTickFinal = true;
+                if (finalBatchSize >= 3) sawThreePlusFinal = true;
+
+                console2.log("candidate completed");
+                console2.log("boundary tick", int256(boundaryTick));
+                console2.log("eligible ticks", expectedEligible);
+                console2.log("final batch size", finalBatchSize);
+                console2.log("final protocol totalExpo", protocol.getTotalExpo());
+                console2.log("final protocol balanceLong", protocol.getBalanceLong());
+            } else {
+                console2.log("eligibility mismatch");
+                console2.log("boundary tick", int256(boundaryTick));
+                console2.log("expected eligible", expectedEligible);
+                console2.log("actually liquidated", cumulativeTicks);
+            }
         }
 
-        console2.log("NO CURRENT MAINNET INVALID_LONG_EXPO HIT FOR FINAL BATCH SIZES 2..10");
+        console2.log("saw final two-tick production batch", sawTwoTickFinal);
+        console2.log("saw final >=3-tick production batch", sawThreePlusFinal);
+        console2.log("NO CURRENT MAINNET INVALID_LONG_EXPO HIT ACROSS ALL LIVE TICK BOUNDARIES");
     }
 }
