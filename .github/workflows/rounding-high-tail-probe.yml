@@ -1,4 +1,4 @@
-name: USDN low-leverage tail High probe
+name: USDN single-tick High probe
 
 on:
   push:
@@ -22,5 +22,5 @@ jobs:
         with:
           node-version: 20
       - run: npm ci && forge soldeer install
-      - name: Low-leverage tail withdrawal recovery probe
-        run: forge test --match-contract TestLiquidationRoundingLowLeverageTailHighProbe -vvvv
+      - name: Single-tick whole-dollar rounding probe
+        run: forge test --match-contract TestLiquidationRoundingSingleTickHighProbe -vvvv
