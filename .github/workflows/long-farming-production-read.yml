@@ -1,0 +1,39 @@
+name: USDN LongFarming production read-only state
+
+on:
+  push:
+    branches:
+      - security/usdn-long-farming-zero-share-backlog
+
+permissions:
+  contents: read
+
+jobs:
+  read-state:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Read production LongFarming and campaign 20 state
+        env:
+          RPC_URL: https://ethereum-rpc.publicnode.com
+          LONG_FARMING: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
+          FARMING_RANGE: '0x7d85C0905a6E1Ab5837a0b57cD94A419d3a77523'
+        run: |
+          set -euxo pipefail
+          cast block-number --rpc-url "$RPC_URL"
+          cast call "$LONG_FARMING" 'CAMPAIGN_ID()(uint256)' --rpc-url "$RPC_URL"
+          cast call "$LONG_FARMING" 'REWARDS_PROVIDER()(address)' --rpc-url "$RPC_URL"
+          cast call "$LONG_FARMING" 'getTotalShares()(uint256)' --rpc-url "$RPC_URL"
+          cast call "$LONG_FARMING" 'getPositionsCount()(uint256)' --rpc-url "$RPC_URL"
+          cast call "$LONG_FARMING" 'getAccRewardPerShare()(uint256)' --rpc-url "$RPC_URL"
+          cast call "$LONG_FARMING" 'getLastRewardBlock()(uint256)' --rpc-url "$RPC_URL"
+          cast call "$FARMING_RANGE" 'userInfo(uint256,address)(uint256,uint256)' 20 "$LONG_FARMING" --rpc-url "$RPC_URL"
+          cast call "$FARMING_RANGE" 'campaignInfo(uint256)(address,address,uint256,uint256,uint256,uint256,uint256)' 20 --rpc-url "$RPC_URL"
+          cast call "$FARMING_RANGE" 'currentRewardPerBlock(uint256)(uint256)' 20 --rpc-url "$RPC_URL"
+          cast call "$FARMING_RANGE" 'currentEndBlock(uint256)(uint256)' 20 --rpc-url "$RPC_URL"
+          cast call "$FARMING_RANGE" 'rewardInfoLen(uint256)(uint256)' 20 --rpc-url "$RPC_URL"
+          cast call "$FARMING_RANGE" 'pendingReward(uint256,address)(uint256)' 20 "$LONG_FARMING" --rpc-url "$RPC_URL"
