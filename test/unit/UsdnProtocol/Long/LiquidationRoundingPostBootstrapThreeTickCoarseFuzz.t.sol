@@ -3,12 +3,12 @@ pragma solidity 0.8.26;
 
 import { UsdnProtocolBaseFixture } from "../utils/Fixtures.sol";
 import { IRebalancer } from "../../../../src/interfaces/Rebalancer/IRebalancer.sol";
+import { IUsdnProtocolTypes as Types } from "../../../../src/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
 
 /// @notice Adversarial search for a stronger fully post-bootstrap witness where
 /// THREE ordinary ticks are liquidated together at an exact whole-dollar oracle
-/// price. A positive residue here demonstrates that the defect is not specific
-/// to a two-tick final batch and that the fallback one-tick recovery cost can
-/// scale with the number of independently rounded ticks.
+/// price. Every staged/final tick is required to retain positive collateral, so
+/// any counterexample is pure independent-floor rounding rather than bad debt.
 contract TestLiquidationRoundingPostBootstrapThreeTickCoarseFuzz is UsdnProtocolBaseFixture {
     uint128 internal constant ENTRY_PRICE = 2000 ether;
     uint128 internal constant BOOTSTRAP_LIQ_PRICE = 980 ether;
@@ -108,8 +108,10 @@ contract TestLiquidationRoundingPostBootstrapThreeTickCoarseFuzz is UsdnProtocol
         uint128 stagePrice = uint128(((supportBoundary - 1) / 1 ether) * 1 ether);
         if (stagePrice == 0) return;
         assertEq(uint256(stagePrice) % 1 ether, 0, "stage price is whole-dollar");
-        protocol.liquidate(abi.encode(stagePrice));
+        Types.LiqTickInfo[] memory staged = protocol.liquidate(abi.encode(stagePrice));
 
+        // Eliminate bad-debt staging as a confounder as well.
+        if (staged.length != 1 || staged[0].remainingCollateral <= 0) return;
         if (protocol.getTotalLongPositions() != 3 || protocol.getHighestPopulatedTick() != posA.tick) return;
 
         _waitDelay();
@@ -128,12 +130,19 @@ contract TestLiquidationRoundingPostBootstrapThreeTickCoarseFuzz is UsdnProtocol
         // accounting state can commit and be inspected instead of reverting.
         vm.prank(managers.setExternalManager);
         protocol.setRebalancer(IRebalancer(address(0)));
-        protocol.liquidate(abi.encode(finalPrice));
+        Types.LiqTickInfo[] memory ticks = protocol.liquidate(abi.encode(finalPrice));
 
-        if (protocol.getTotalLongPositions() != 0) return;
+        if (protocol.getTotalLongPositions() != 0 || ticks.length != 3) return;
+
+        // All three ticks must have strictly positive remaining collateral.
+        // Otherwise a triager could attribute the result to a bad-debt path.
+        if (
+            ticks[0].remainingCollateral <= 0 || ticks[1].remainingCollateral <= 0
+                || ticks[2].remainingCollateral <= 0
+        ) return;
 
         uint256 expo = protocol.getTotalExpo();
         uint256 longBalance = protocol.getBalanceLong();
-        assertLe(longBalance, expo, "THREE_TICK_WHOLE_DOLLAR_POST_BOOTSTRAP_COUNTEREXAMPLE");
+        assertLe(longBalance, expo, "THREE_TICK_POSITIVE_COLLATERAL_WHOLE_DOLLAR_COUNTEREXAMPLE");
     }
 }
