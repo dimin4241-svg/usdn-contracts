@@ -160,4 +160,55 @@ contract TestLiquidationRoundingPostBootstrapWholeDollarFixValidation is UsdnPro
         assertEq(protocol.getTotalExpo(), 0, "all exposure removed");
         assertEq(protocol.getBalanceLong(), 0, "fix reconciles whole-dollar one-wei residue");
     }
+
+    function test_C_activeRebalancerUsesCorrectedCollateralWithoutCreatingAssets() public {
+        // The fix adds the reconciliation amount to aggregate remainingCollateral. That value
+        // is also the base used by _triggerRebalancer() for its bonus. Seed a real pending
+        // Rebalancer deposit so the trigger takes the full open-position path instead of an
+        // early no-op, while restoring the witness timestamp so the exact one-wei gap remains.
+        uint128 pendingAssets = 2 ether;
+        uint256 witnessTimestamp = block.timestamp;
+
+        wstETH.mintAndApprove(address(this), pendingAssets, address(rebalancer), type(uint256).max);
+        rebalancer.initiateDepositAssets(pendingAssets, address(this));
+        skip(rebalancer.getTimeLimits().validationDelay);
+        rebalancer.validateDepositAssets();
+        assertEq(rebalancer.getPendingAssetsAmount(), pendingAssets, "pending Rebalancer assets seeded");
+        vm.warp(witnessTimestamp);
+
+        (uint128 pendingBefore,, Types.PositionId memory posBefore) = rebalancer.getCurrentStateData();
+        assertEq(pendingBefore, pendingAssets, "pending assets visible to protocol");
+        assertEq(posBefore.tick, type(int24).min, "Rebalancer starts without an active position");
+
+        uint256 correctedRemaining = EXPECTED_A_REMAINING + EXPECTED_B_REMAINING + 1;
+        assertEq(correctedRemaining, uint256(EXPECTED_TEMP_LONG_BALANCE), "correct aggregate collateral");
+        uint256 expectedBonus = correctedRemaining * protocol.getRebalancerBonusBps() / 10_000;
+        assertGt(protocol.getRebalancerBonusBps(), 0, "production Rebalancer bonus enabled");
+        assertLe(expectedBonus, correctedRemaining, "bonus cannot exceed corrected collateral");
+
+        uint256 combinedAssetsBefore = wstETH.balanceOf(address(protocol)) + wstETH.balanceOf(address(rebalancer))
+            + wstETH.balanceOf(PUBLIC_LIQUIDATOR);
+
+        vm.prank(PUBLIC_LIQUIDATOR);
+        Types.LiqTickInfo[] memory ticks = protocol.liquidate(abi.encode(FINAL_PRICE));
+        assertEq(ticks.length, 2, "same A+B witness batch");
+
+        (uint128 pendingAfter,, Types.PositionId memory rebalancerPosId) = rebalancer.getCurrentStateData();
+        assertEq(pendingAfter, 0, "pending assets consumed into Rebalancer position");
+        assertTrue(rebalancerPosId.tick != type(int24).min, "Rebalancer position opened");
+
+        (Types.Position memory rebalancerPosition,) = protocol.getLongPosition(rebalancerPosId);
+        assertTrue(rebalancerPosition.validated, "Rebalancer position is active");
+        assertEq(rebalancerPosition.user, address(rebalancer), "position belongs to Rebalancer");
+        assertEq(
+            rebalancerPosition.amount,
+            pendingAssets + expectedBonus,
+            "Rebalancer receives pending assets plus exactly the corrected-collateral bonus"
+        );
+
+        uint256 combinedAssetsAfter = wstETH.balanceOf(address(protocol)) + wstETH.balanceOf(address(rebalancer))
+            + wstETH.balanceOf(PUBLIC_LIQUIDATOR);
+        assertEq(combinedAssetsAfter, combinedAssetsBefore, "Rebalancer trigger and reconciliation create no wstETH");
+        assertLe(protocol.getBalanceLong(), protocol.getTotalExpo(), "post-trigger long exposure invariant preserved");
+    }
 }
