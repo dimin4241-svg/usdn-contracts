@@ -130,36 +130,28 @@ contract TestLiquidationRoundingActiveRebalancerFixValidation is UsdnProtocolBas
         assertGt(finalBoundary, FINAL_PRICE, "B must be liquidatable at final whole-dollar price");
     }
 
-    function test_activeRebalancerConsumesPendingAssetsAndUsesCorrectedCollateralBonus() public {
-        uint256 protocolAssetBefore = wstETH.balanceOf(address(protocol));
-        uint256 rebalancerAssetBefore = wstETH.balanceOf(address(rebalancer));
-        uint256 liquidatorAssetBefore = wstETH.balanceOf(PUBLIC_LIQUIDATOR);
-        uint128 versionBefore = rebalancer.getPositionVersion();
+    function _trackedPhysicalAssets() internal view returns (uint256 total_) {
+        total_ = wstETH.balanceOf(address(protocol)) + wstETH.balanceOf(address(rebalancer))
+            + wstETH.balanceOf(PUBLIC_LIQUIDATOR);
+    }
 
-        assertEq(rebalancerAssetBefore, REBALANCER_PENDING_ASSETS, "pending assets physically held by Rebalancer");
-
-        vm.startPrank(PUBLIC_LIQUIDATOR, PUBLIC_LIQUIDATOR);
-        Types.LiqTickInfo[] memory ticks = protocol.liquidate(abi.encode(FINAL_PRICE));
-        vm.stopPrank();
-
+    function _correctedBonusFromTicks(Types.LiqTickInfo[] memory ticks) internal returns (uint256 correctedBonus_) {
         assertEq(ticks.length, 2, "final batch must liquidate A+B");
         assertEq(uint256(ticks[0].remainingCollateral), EXPECTED_A_REMAINING, "tick A floor changed");
         assertEq(uint256(ticks[1].remainingCollateral), EXPECTED_B_REMAINING, "tick B floor changed");
 
-        // The two public LiqTickInfo values are the independently floored source values. The
-        // aggregate accounting reconstruction contributes exactly one additional wei.
         uint256 legacyFlooredCollateral =
             uint256(ticks[0].remainingCollateral) + uint256(ticks[1].remainingCollateral);
-        uint256 correctedCollateral = legacyFlooredCollateral + 1;
         uint256 bonusBps = protocol.getRebalancerBonusBps();
         uint256 legacyBonus = legacyFlooredCollateral * bonusBps / 10_000;
-        uint256 correctedBonus = correctedCollateral * bonusBps / 10_000;
-        assertEq(correctedBonus, legacyBonus + 1, "witness must make reconciliation observable in bonus");
+        correctedBonus_ = (legacyFlooredCollateral + 1) * bonusBps / 10_000;
 
-        uint128 versionAfter = rebalancer.getPositionVersion();
-        assertEq(versionAfter, versionBefore + 1, "real Rebalancer trigger must open next version");
-        assertEq(rebalancer.getPendingAssetsAmount(), 0, "validated pending assets must be consumed");
+        // This witness is useful because the one-wei accounting reconciliation survives the
+        // Rebalancer bonus floor as an observable one-wei difference in the opened collateral.
+        assertEq(correctedBonus_, legacyBonus + 1, "reconciliation must be observable in Rebalancer bonus");
+    }
 
+    function _assertOpenedRebalancerPosition(uint128 versionAfter, uint256 correctedBonus) internal {
         IRebalancerTypes.PositionData memory rbPosition = rebalancer.getPositionData(versionAfter);
         assertEq(rbPosition.amount, REBALANCER_PENDING_ASSETS, "Rebalancer principal excludes liquidation bonus");
         assertNotEq(rbPosition.tick, type(int24).min, "real Rebalancer position must exist");
@@ -182,18 +174,41 @@ contract TestLiquidationRoundingActiveRebalancerFixValidation is UsdnProtocolBas
             correctedBonus,
             "observable Rebalancer bonus must equal corrected collateral formula"
         );
+    }
+
+    function test_activeRebalancerConsumesPendingAssetsAndUsesCorrectedCollateralBonus() public {
+        uint256 trackedAssetsBefore = _trackedPhysicalAssets();
+        uint256 liquidatorAssetBefore = wstETH.balanceOf(PUBLIC_LIQUIDATOR);
+        uint128 versionBefore = rebalancer.getPositionVersion();
+
+        assertEq(
+            wstETH.balanceOf(address(rebalancer)),
+            REBALANCER_PENDING_ASSETS,
+            "pending assets physically held by Rebalancer"
+        );
+
+        vm.startPrank(PUBLIC_LIQUIDATOR, PUBLIC_LIQUIDATOR);
+        Types.LiqTickInfo[] memory ticks = protocol.liquidate(abi.encode(FINAL_PRICE));
+        vm.stopPrank();
+
+        uint256 correctedBonus = _correctedBonusFromTicks(ticks);
+        uint128 versionAfter = rebalancer.getPositionVersion();
+        assertEq(versionAfter, versionBefore + 1, "real Rebalancer trigger must open next version");
+        assertEq(rebalancer.getPendingAssetsAmount(), 0, "validated pending assets must be consumed");
+
+        _assertOpenedRebalancerPosition(versionAfter, correctedBonus);
 
         assertEq(protocol.getTotalLongPositions(), 1, "A+B removed and one Rebalancer position opened");
         assertLe(protocol.getBalanceLong(), protocol.getTotalExpo(), "long/exposure safety invariant preserved");
-
-        uint256 protocolAssetAfter = wstETH.balanceOf(address(protocol));
-        uint256 rebalancerAssetAfter = wstETH.balanceOf(address(rebalancer));
-        uint256 liquidatorAssetAfter = wstETH.balanceOf(PUBLIC_LIQUIDATOR);
-        assertEq(rebalancerAssetAfter, 0, "pending assets transferred into protocol");
-        assertGt(liquidatorAssetAfter, liquidatorAssetBefore, "liquidator receives configured reward");
+        assertEq(wstETH.balanceOf(address(rebalancer)), 0, "pending assets transferred into protocol");
+        assertGt(
+            wstETH.balanceOf(PUBLIC_LIQUIDATOR),
+            liquidatorAssetBefore,
+            "liquidator receives configured reward"
+        );
         assertEq(
-            protocolAssetAfter + rebalancerAssetAfter + liquidatorAssetAfter,
-            protocolAssetBefore + rebalancerAssetBefore + liquidatorAssetBefore,
+            _trackedPhysicalAssets(),
+            trackedAssetsBefore,
             "no phantom external asset is created by reconciliation or Rebalancer bonus"
         );
     }
