@@ -1,0 +1,28 @@
+name: USDN post-bootstrap ordinary fuzz
+
+on:
+  push:
+    branches:
+      - security/usdn-post-bootstrap-fuzz
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci && forge soldeer install
+      - name: Fuzz post-bootstrap state
+        env:
+          FOUNDRY_FUZZ_RUNS: '2000'
+        run: forge test --match-contract TestLiquidationRoundingPostBootstrapFuzz -vvv
