@@ -5,20 +5,21 @@ import { UsdnProtocolBaseFixture } from "../utils/Fixtures.sol";
 import { IUsdnProtocolTypes as Types } from "../../../../src/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
 
 /// @notice High-severity probe: look for a rounding residue with liquidationIteration == 1.
-/// If a single populated tick can itself end with newLongBalance > totalExpo, the
-/// existing one-tick permissionless recovery path for user actions no longer helps:
-/// validateWithdrawal/validateClosePosition would reach the Rebalancer sink in the
-/// same transaction instead of committing one tick of progress.
+/// If one populated tick can itself end with newLongBalance > totalExpo, the
+/// one-tick permissionless recovery argument for user actions disappears.
 contract TestLiquidationRoundingSingleTickHighProbe is UsdnProtocolBaseFixture {
     uint128 internal constant ENTRY_PRICE = 2000 ether;
     uint128 internal constant BOOTSTRAP_LIQ_PRICE = 980 ether;
 
-    // Large but still ordinary public user position. The explicit initial vault
-    // deposit is chosen to keep the production 5% open-imbalance limit enabled
-    // while providing trading-exposure capacity for this position.
+    // Build a large but balanced protocol first. initialDeposit=0 makes the fixture
+    // auto-calculate the exact equilibrium vault side, so no imbalance limit is bypassed.
+    uint128 internal constant INITIAL_LONG = 20_000 ether;
+
+    // This position is opened by an ordinary user through initiate/validate with all
+    // production limits enabled. Its exposure is intentionally > ~$1,250-equivalent
+    // in raw 1e18 units so sub-wei effective-price rounding can become a full wei.
     uint128 internal constant TARGET_AMOUNT = 500 ether;
-    uint128 internal constant TARGET_DESIRED_LIQ = 1835 ether;
-    uint128 internal constant INITIAL_VAULT = 4_300 ether;
+    uint128 internal constant TARGET_DESIRED_LIQ = 1250 ether;
 
     address internal constant TRADER = address(0xBEEF);
 
@@ -36,8 +37,8 @@ contract TestLiquidationRoundingSingleTickHighProbe is UsdnProtocolBaseFixture {
 
     function setUp() public {
         params = DEFAULT_PARAMS;
-        params.initialDeposit = INITIAL_VAULT;
-        params.initialLong = 200 ether;
+        params.initialDeposit = 0; // exact equilibrium, calculated by the fixture
+        params.initialLong = INITIAL_LONG;
         params.flags.enablePositionFees = true;
         params.flags.enableProtocolFees = true;
         params.flags.enableFunding = true;
@@ -53,14 +54,16 @@ contract TestLiquidationRoundingSingleTickHighProbe is UsdnProtocolBaseFixture {
         vm.deal(TRADER, 10 ether);
         super._setUp(params);
 
-        assertEq(protocol.getLiquidationIteration(), 1, "production user-action iteration");
-        assertEq(protocol.getMaxLeverage(), 10 ether, "production max leverage");
-        assertEq(protocol.getSafetyMarginBps(), 200, "production safety margin");
-        assertGt(protocol.getCloseExpoImbalanceLimitBps(), 0, "production close imbalance limit");
-        assertEq(address(protocol.getRebalancer()), address(rebalancer), "production Rebalancer installed");
+        assertEq(protocol.getLiquidationIteration(), 1, "user-action liquidation iteration");
+        assertGt(protocol.getMaxLeverage(), 10 ** 21, "max leverage must exceed 1x");
+        assertEq(protocol.getSafetyMarginBps(), 200, "default safety margin");
+        assertGt(protocol.getOpenExpoImbalanceLimitBps(), 0, "open imbalance limit must remain enabled");
+        assertGt(protocol.getCloseExpoImbalanceLimitBps(), 0, "close imbalance limit must remain enabled");
+        assertEq(address(protocol.getRebalancer()), address(rebalancer), "Rebalancer installed");
 
-        // Remove the initialization-created long first. No witness state is inherited
-        // from bootstrap; the large position below is created through normal public flows.
+        // Remove the initialization-created long. This leaves a large organically
+        // plausible vault TVL, while the attacker-controlled position below is created
+        // only through normal public user actions.
         _waitDelay();
         _waitDelay();
         protocol.liquidate(abi.encode(BOOTSTRAP_LIQ_PRICE));
@@ -68,6 +71,7 @@ contract TestLiquidationRoundingSingleTickHighProbe is UsdnProtocolBaseFixture {
         assertEq(protocol.getTotalExpo(), 0, "bootstrap exposure must be gone");
         assertEq(protocol.getBalanceLong(), 0, "bootstrap long balance must be gone");
 
+        // Reset lastPrice to the normal entry price before opening the user position.
         _waitDelay();
         _waitDelay();
         protocol.liquidate(abi.encode(ENTRY_PRICE));
@@ -79,12 +83,13 @@ contract TestLiquidationRoundingSingleTickHighProbe is UsdnProtocolBaseFixture {
 
         assertEq(protocol.getTotalLongPositions(), 1, "exactly one populated long position");
         assertEq(protocol.getHighestPopulatedTick(), targetPos.tick, "target must be highest/only tick");
+        assertGt(protocol.getTotalExpo(), TARGET_AMOUNT, "position must carry trading exposure");
         _waitBeforeLiquidation();
     }
 
-    /// @dev Searches realistic whole-dollar oracle prices inside the target tick's
+    /// @dev Searches whole-dollar oracle prices inside the target tick's
     /// positive-collateral liquidation window. Each candidate is executed against
-    /// the real v1.0.0 source helper and then rolled back.
+    /// the real vulnerable liquidation helper and then rolled back.
     function test_probeSingleTickWholeDollarResidue() public {
         uint256 tickBoundary = protocol.getEffectivePriceForTick(targetPos.tick);
         int24 noPenaltyTick = protocol.i_calcTickWithoutPenalty(targetPos.tick);
@@ -97,7 +102,7 @@ contract TestLiquidationRoundingSingleTickHighProbe is UsdnProtocolBaseFixture {
         assertLe(firstDollar, lastDollar, "need at least one whole-dollar price in window");
 
         uint256 totalExpoBefore = protocol.getTotalExpo();
-        assertGt(totalExpoBefore, uint256(ENTRY_PRICE), "probe needs exposure large enough for sub-wei price rounding to matter");
+        assertGt(totalExpoBefore, 1250 ether, "exposure must be large enough for one-wei amplification");
 
         for (uint256 dollars = firstDollar; dollars <= lastDollar; ++dollars) {
             uint256 snapshot = vm.snapshotState();
