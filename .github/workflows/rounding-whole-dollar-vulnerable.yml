@@ -24,5 +24,7 @@ jobs:
       - run: npm ci && forge soldeer install
       - name: Exact whole-dollar vulnerable-side witness
         run: forge test --match-contract TestLiquidationRoundingPostBootstrapWholeDollarVulnerable -vvvv
+      - name: Exact whole-dollar temporal boundary
+        run: forge test --match-contract TestLiquidationRoundingPostBootstrapWholeDollarTemporalBoundary -vvvv
       - name: Preserve real upstream Rebalancer safety check
         run: forge test --match-test test_RevertWhen_triggerRebalancerWithTotalExpoBelowLongBalance -vvvv
