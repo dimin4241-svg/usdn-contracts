@@ -22,6 +22,8 @@ jobs:
         with:
           node-version: 20
       - run: npm ci && forge soldeer install
+      - name: Single-tick High-severity probe
+        run: forge test --match-contract TestLiquidationRoundingSingleTickHighProbe -vvvv
       - name: Exact whole-dollar vulnerable-side witness
         run: forge test --match-contract TestLiquidationRoundingPostBootstrapWholeDollarVulnerable -vvvv
       - name: Boundary control - plus 59 seconds still atomically reverts
