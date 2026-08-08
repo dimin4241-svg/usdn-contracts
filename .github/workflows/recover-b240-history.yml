@@ -1,0 +1,76 @@
+name: USDN recover b240 history
+
+on:
+  push:
+    branches:
+      - security/usdn-mainnet-history
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - label: pre
+            start: 24000000
+            end: 24339999
+            chunk: 10000
+          - label: crash-range
+            start: 24340000
+            end: 24349999
+            chunk: 1000
+          - label: post
+            start: 24350000
+            end: 24599999
+            chunk: 10000
+    runs-on: ubuntu-latest
+    name: recover-${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan recovery range
+        shell: bash
+        env:
+          START: ${{ matrix.start }}
+          END: ${{ matrix.end }}
+          CHUNK: ${{ matrix.chunk }}
+          LABEL: ${{ matrix.label }}
+        run: |
+          set -euo pipefail
+          RPC=https://eth.drpc.org
+          PROTOCOL=0x656cb8c6d154aad29d8771384089be5b5141f01a
+          TOPIC=0xb64624ffaac1b0226fccb859570380e00ddef038d67b89cd781c6fac2703a9a7
+          : > /tmp/liqs.jsonl
+
+          for ((FROM=START; FROM<=END; FROM+=CHUNK)); do
+            TO=$((FROM+CHUNK-1)); if (( TO > END )); then TO=$END; fi
+            FH=$(printf '0x%x' "$FROM"); TH=$(printf '0x%x' "$TO")
+            PAYLOAD=$(jq -nc --arg a "$PROTOCOL" --arg f "$FH" --arg t "$TH" --arg topic "$TOPIC" \
+              '{jsonrpc:"2.0",id:1,method:"eth_getLogs",params:[{address:$a,fromBlock:$f,toBlock:$t,topics:[$topic]}]}')
+            OK=false
+            for ATTEMPT in 1 2 3 4; do
+              RESP=$(curl -sS --max-time 25 -H 'content-type: application/json' --data "$PAYLOAD" "$RPC" || true)
+              if [ -n "$RESP" ] && [ "$(echo "$RESP" | jq -r 'has("result")' 2>/dev/null || echo false)" = true ]; then
+                echo "$RESP" | jq -c '.result[]' >> /tmp/liqs.jsonl
+                OK=true
+                break
+              fi
+              sleep $((ATTEMPT * 2))
+            done
+            [ "$OK" = true ] || { echo "FAILED $FROM-$TO"; exit 1; }
+            sleep 0.15
+          done
+
+          TOTAL=$(wc -l < /tmp/liqs.jsonl | tr -d ' ')
+          echo "RECOVERY=$LABEL total events=$TOTAL"
+          jq -s '
+            sort_by(.transactionHash)
+            | group_by(.transactionHash)
+            | map(select(length > 1) | {tx:.[0].transactionHash,block:.[0].blockNumber,count:length,ticks:map(.topics[1])})
+            | sort_by(.block)
+          ' /tmp/liqs.jsonl > /tmp/multi.json
+          echo "RECOVERY=$LABEL multi-tick=$(jq 'length' /tmp/multi.json)"
+          jq -r '.[] | [.block,.count,.tx,(.ticks|join(","))] | @tsv' /tmp/multi.json
