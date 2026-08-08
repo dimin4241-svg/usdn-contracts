@@ -130,7 +130,7 @@ contract TestLiquidationRoundingPostBootstrapWholeDollarVulnerable is UsdnProtoc
 
         uint256 positionsBefore = protocol.getTotalLongPositions();
         uint256 expoBefore = protocol.getTotalExpo();
-        int256 longBefore = protocol.getBalanceLong();
+        uint256 longBefore = protocol.getBalanceLong();
         int24 highestBefore = protocol.getHighestPopulatedTick();
         uint256 liquidatorBefore = wstETH.balanceOf(PUBLIC_LIQUIDATOR);
 
@@ -189,7 +189,7 @@ contract TestLiquidationRoundingPostBootstrapWholeDollarVulnerable is UsdnProtoc
     function test_D_threeDedicatedRetriesMakeZeroCommittedProgress() public {
         uint256 positionsBefore = protocol.getTotalLongPositions();
         uint256 expoBefore = protocol.getTotalExpo();
-        int256 longBefore = protocol.getBalanceLong();
+        uint256 longBefore = protocol.getBalanceLong();
         int24 highestBefore = protocol.getHighestPopulatedTick();
         uint256 liquidatorBefore = wstETH.balanceOf(PUBLIC_LIQUIDATOR);
 
