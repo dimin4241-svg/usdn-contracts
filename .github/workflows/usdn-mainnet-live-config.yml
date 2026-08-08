@@ -15,13 +15,15 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: nightly-50dd4b8accae878391b0825885f0632d1e0a1e4c
-      - name: Read current in-scope proxy parameters
+      - name: Read current in-scope proxy and Rebalancer state
         shell: bash
         run: |
           set -euxo pipefail
           RPC=https://ethereum-rpc.publicnode.com
           PROTOCOL=0x656cB8C6d154Aad29d8771384089be5B5141f01a
-          echo "block=$(cast block-number --rpc-url $RPC)"
+          REBALANCER=0xaeBcc85a5594e687F6B302405E6E92D616826e03
+          BLOCK=$(cast block-number --rpc-url $RPC)
+          echo "block=$BLOCK"
           echo "liquidationIteration=$(cast call $PROTOCOL 'getLiquidationIteration()(uint16)' --rpc-url $RPC)"
           echo "lowLatencyValidatorDeadline=$(cast call $PROTOCOL 'getLowLatencyValidatorDeadline()(uint128)' --rpc-url $RPC)"
           echo "onChainValidatorDeadline=$(cast call $PROTOCOL 'getOnChainValidatorDeadline()(uint128)' --rpc-url $RPC)"
@@ -30,4 +32,12 @@ jobs:
           echo "safetyMarginBps=$(cast call $PROTOCOL 'getSafetyMarginBps()(uint256)' --rpc-url $RPC)"
           echo "maxLeverage=$(cast call $PROTOCOL 'getMaxLeverage()(uint256)' --rpc-url $RPC)"
           echo "rebalancer=$(cast call $PROTOCOL 'getRebalancer()(address)' --rpc-url $RPC)"
+          echo "totalExpo=$(cast call $PROTOCOL 'getTotalExpo()(uint256)' --rpc-url $RPC)"
+          echo "balanceLong=$(cast call $PROTOCOL 'getBalanceLong()(uint256)' --rpc-url $RPC)"
+          echo "balanceVault=$(cast call $PROTOCOL 'getBalanceVault()(uint256)' --rpc-url $RPC)"
+          echo "highestPopulatedTick=$(cast call $PROTOCOL 'getHighestPopulatedTick()(int24)' --rpc-url $RPC)"
+          echo "lastPrice=$(cast call $PROTOCOL 'getLastPrice()(uint128)' --rpc-url $RPC)"
+          echo "rebalancerState=$(cast call $REBALANCER 'getCurrentStateData()(uint128,uint256,(int24,uint256,uint256))' --rpc-url $RPC)"
+          echo "rebalancerPendingAssets=$(cast call $REBALANCER 'getPendingAssetsAmount()(uint128)' --rpc-url $RPC)"
+          echo "rebalancerMaxLeverage=$(cast call $REBALANCER 'getPositionMaxLeverage()(uint256)' --rpc-url $RPC)"
           echo "implementationSlot=$(cast storage $PROTOCOL 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc --rpc-url $RPC)"
