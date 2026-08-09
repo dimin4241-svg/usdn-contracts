@@ -1,0 +1,78 @@
+name: sUSDN USDN oracle adapter introspection
+
+on:
+  push:
+    branches: [security/susdn-live-config]
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Introspect live USDN primitive aggregator
+        env:
+          RPC_URL: https://ethereum-rpc.publicnode.com
+          AGG: '0xd5004C5D3017862839e83981b110f27EE7B36EAa'
+          PROTOCOL: '0x656cb8c6d154aad29d8771384089be5b5141f01a'
+          USDN: '0xde17a000BA631c5d7c2Bd9FB692EFeA52D90DEE2'
+        shell: bash
+        run: |
+          set -euo pipefail
+          c() {
+            local addr="$1" sig="$2"; shift 2
+            printf '%s => ' "$sig"
+            cast call "$addr" "$sig" "$@" --rpc-url "$RPC_URL" 2>/dev/null || echo CALL_FAILED
+          }
+
+          echo "BLOCK=$(cast block-number --rpc-url "$RPC_URL")"
+          echo "BLOCK_TS=$(cast block latest --field timestamp --rpc-url "$RPC_URL")"
+          echo "AGG_CODESIZE=$(cast codesize "$AGG" --rpc-url "$RPC_URL")"
+          echo "AGG_CODEHASH=$(cast codehash "$AGG" --rpc-url "$RPC_URL")"
+          CODE=$(cast code "$AGG" --rpc-url "$RPC_URL")
+          echo "AGG_SELECTORS_BEGIN"
+          cast selectors "$CODE" || true
+          echo "AGG_SELECTORS_END"
+
+          echo "--- standard-ish aggregator probes ---"
+          c "$AGG" 'decimals()(uint8)'
+          c "$AGG" 'latestRoundData()(uint80,int256,uint256,uint256,uint80)'
+          c "$AGG" 'latestAnswer()(int256)'
+          c "$AGG" 'latestTimestamp()(uint256)'
+          c "$AGG" 'latestRound()(uint256)'
+          c "$AGG" 'version()(uint256)'
+          c "$AGG" 'description()(string)'
+          c "$AGG" 'owner()(address)'
+
+          echo "--- dependency/name probes ---"
+          c "$AGG" 'USDN()(address)'
+          c "$AGG" 'usdn()(address)'
+          c "$AGG" 'getUsdn()(address)'
+          c "$AGG" 'USDN_PROTOCOL()(address)'
+          c "$AGG" 'usdnProtocol()(address)'
+          c "$AGG" 'getUsdnProtocol()(address)'
+          c "$AGG" 'protocol()(address)'
+          c "$AGG" 'getProtocol()(address)'
+          c "$AGG" 'price()(uint256)'
+          c "$AGG" 'getPrice()(uint256)'
+
+          echo "--- protocol state compared with feed timestamp ---"
+          c "$PROTOCOL" 'getLastUpdateTimestamp()(uint128)'
+          c "$PROTOCOL" 'getLastPrice()(uint128)'
+          c "$PROTOCOL" 'getTargetUsdnPrice()(uint128)'
+          c "$PROTOCOL" 'getUsdnRebaseThreshold()(uint128)'
+          c "$PROTOCOL" 'getVaultBalance()(uint256)'
+          c "$PROTOCOL" 'getLongBalance()(uint256)'
+          c "$PROTOCOL" 'getTotalExpo()(uint256)'
+          c "$PROTOCOL" 'getAsset()(address)'
+          c "$PROTOCOL" 'getUsdn()(address)'
+
+          echo "--- USDN accounting ---"
+          c "$USDN" 'totalSupply()(uint256)'
+          c "$USDN" 'divisor()(uint256)'
+          c "$USDN" 'totalShares()(uint256)'
+          c "$USDN" 'MAX_DIVISOR()(uint256)'
+          c "$USDN" 'MIN_DIVISOR()(uint256)'
