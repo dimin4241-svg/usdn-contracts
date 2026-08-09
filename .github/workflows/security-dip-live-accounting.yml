@@ -15,7 +15,7 @@ jobs:
       RPC_URL: "https://ethereum-rpc.publicnode.com"
       DIP: "0xaeBcc85a5594e687F6B302405E6E92D616826e03"
       PROTOCOL: "0x656cB8C6d154Aad29d8771384089be5B5141f01a"
-      WSTETH: "0x7f39C581F595B53c5cb5bD0b3f8dA6c935E2Ca0"
+      WSTETH: "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
     steps:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
@@ -69,7 +69,7 @@ jobs:
             done
           done
           python3 - <<'PY'
-          import json,re
+          import json
           users=set(); n=0
           for line in open('/tmp/events.jsonl'):
               try: x=json.loads(line)
@@ -83,11 +83,8 @@ jobs:
           print('USER_COUNT='+str(len(users)))
           open('/tmp/users.txt','w').write('\n'.join(sorted(users)))
           PY
-          SUM=0
-          ACTIVE=0
           while read -r u; do
             [ -z "$u" ] && continue
             d=$(cast call "$DIP" 'getUserDepositData(address)((uint40,uint88,uint128))' "$u" --rpc-url "$RPC_URL")
-            vals=$(echo "$d" | tr -cd '0-9 \n' | head -n1)
             echo "USER=$u DATA=$d"
           done < /tmp/users.txt
