@@ -19,6 +19,7 @@ jobs:
           git clone https://github.com/SmarDex-Ecosystem/usdn-long-farming.git /tmp/usdn-long-farming
           cd /tmp/usdn-long-farming
           git checkout cd5f5e1f693c53a73d869a275cbf960ce9540c79
+          git config --global url."https://github.com/".insteadOf git@github.com:
           forge soldeer install
 
           cat > test/unit/UsdnLongFarming/PostLiquidationRewards.t.sol <<'SOL'
@@ -53,19 +54,16 @@ jobs:
               }
 
               function test_liquidatedPositionAccruesRewardsForEntireNotificationDelay() public {
-                  // At this exact block the USDN position becomes economically liquidated.
                   usdnProtocol.setPosition(position, VERSION, true);
 
                   uint256 pendingAtLiquidation = farming.pendingRewards(TICK, VERSION, INDEX);
                   assertEq(pendingAtLiquidation, 0, "fixture should start with no pending rewards");
 
-                  // No interaction with LongFarming for 100 blocks. The position remains in _totalShares.
                   vm.roll(block.number + 100);
 
                   uint256 pendingAfterDelay = farming.pendingRewards(TICK, VERSION, INDEX);
                   assertGt(pendingAfterDelay, 0, "liquidated position must not keep accruing rewards");
 
-                  // A third party finally notifies via harvest(). _updateRewards() runs BEFORE _isLiquidated().
                   vm.prank(USER_1);
                   (bool isLiquidated,) = farming.harvest(TICK, VERSION, INDEX);
                   assertTrue(isLiquidated, "position must be recognized as liquidated");
