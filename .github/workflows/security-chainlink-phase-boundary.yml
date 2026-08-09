@@ -1,0 +1,84 @@
+name: USDN Chainlink phase-boundary proof
+
+on:
+  push:
+    branches:
+      - security/usdn-chainlink-phase-boundary
+
+permissions:
+  contents: read
+
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Probe ETH/USD phase boundaries used by USDN middleware
+        env:
+          FEED: '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419'
+          MIDDLEWARE: '0xC1459fcFe23d5db9Ddb04935ab7a426Bd398EAb0'
+          RPC_URL: 'https://ethereum-rpc.publicnode.com'
+        run: |
+          set -euo pipefail
+          echo "middleware price feed:"
+          cast call "$MIDDLEWARE" 'getPriceFeed()(address)' --rpc-url "$RPC_URL"
+          python3 - <<'PY'
+          import os, subprocess, datetime
+          rpc=os.environ['RPC_URL']; feed=os.environ['FEED']
+
+          def call(sig, *args, check=True):
+              p=subprocess.run(['cast','call',feed,sig,*map(str,args),'--rpc-url',rpc],text=True,capture_output=True)
+              if check and p.returncode:
+                  raise RuntimeError(p.stderr or p.stdout)
+              return p
+
+          latest=call('latestRoundData()(uint80,int256,uint256,uint256,uint80)')
+          vals=[x.strip().split()[0] for x in latest.stdout.strip().splitlines() if x.strip()]
+          latest_round=int(vals[0]); current_phase=latest_round >> 64
+          print('latestRoundId', latest_round)
+          print('currentPhase', current_phase)
+
+          for phase in range(3, current_phase+1):
+              first=(phase<<64)+1
+              synthetic_prev=phase<<64
+              print('\nPHASE',phase,'firstRoundId',first,'syntheticPreviousRoundId',synthetic_prev)
+              pprev=call('getRoundData(uint80)(uint80,int256,uint256,uint256,uint80)',synthetic_prev,check=False)
+              print('syntheticPreviousStatus',pprev.returncode)
+              if pprev.returncode:
+                  print('syntheticPreviousREVERT', (pprev.stderr or pprev.stdout).strip().replace('\n',' | ')[:500])
+              else:
+                  print('syntheticPreviousData',pprev.stdout.strip().replace('\n',' | '))
+              pfirst=call('getRoundData(uint80)(uint80,int256,uint256,uint256,uint80)',first,check=False)
+              print('firstRoundStatus',pfirst.returncode)
+              if pfirst.returncode:
+                  print('firstRoundREVERT',(pfirst.stderr or pfirst.stdout).strip().replace('\n',' | ')[:500])
+                  continue
+              fvals=[x.strip().split()[0] for x in pfirst.stdout.strip().splitlines() if x.strip()]
+              updated=int(fvals[3])
+              print('firstRoundUpdatedAt',updated,datetime.datetime.fromtimestamp(updated,datetime.timezone.utc).isoformat())
+
+              # Last valid round of previous phase is discovered with a bounded binary search.
+              prev_phase=phase-1
+              lo,hi=1,10_000_000
+              def exists(n):
+                  rid=(prev_phase<<64)+n
+                  return call('getRoundData(uint80)(uint80,int256,uint256,uint256,uint80)',rid,check=False).returncode==0
+              if not exists(1):
+                  print('previousPhaseFirstRoundUnavailable',prev_phase)
+                  continue
+              while exists(hi):
+                  hi*=2
+              while lo+1<hi:
+                  mid=(lo+hi)//2
+                  if exists(mid): lo=mid
+                  else: hi=mid
+              plast=call('getRoundData(uint80)(uint80,int256,uint256,uint256,uint80)',(prev_phase<<64)+lo)
+              lvals=[x.strip().split()[0] for x in plast.stdout.strip().splitlines() if x.strip()]
+              last_updated=int(lvals[3])
+              print('previousPhaseLastRound',lo,'updatedAt',last_updated,datetime.datetime.fromtimestamp(last_updated,datetime.timezone.utc).isoformat())
+              print('phaseGapSeconds',updated-last_updated)
+          PY
