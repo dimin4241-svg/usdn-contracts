@@ -1,0 +1,28 @@
+name: USDN Enzyme feed surface
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/security-usdn-feed-surface.yml'
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Resolve selectors and query feed
+        env:
+          RPC: https://ethereum-rpc.publicnode.com
+          FEED: '0xd5004C5D3017862839e83981b110f27EE7B36EAa'
+        run: |
+          set -euo pipefail
+          for s in 0x0918d214 0x1f68f20a 0x2e0f2625 0x2faa3a09 0x2fe54fc5 0x313ce567 0xfeaf968c; do
+            echo "SELECTOR=$s"
+            cast 4byte "$s" || true
+            echo "RAW=$(cast rpc eth_call \"{\\\"to\\\":\\\"$FEED\\\",\\\"data\\\":\\\"$s\\\"}\" latest --rpc-url \"$RPC\" 2>&1 || true)"
+          done
+          echo "LATEST_1=$(cast call $FEED 'latestRoundData()(uint80,int256,uint256,uint256,uint80)' --rpc-url $RPC)"
+          sleep 3
+          echo "LATEST_2=$(cast call $FEED 'latestRoundData()(uint80,int256,uint256,uint256,uint80)' --rpc-url $RPC)"
