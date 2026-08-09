@@ -54,16 +54,21 @@ jobs:
               }
 
               function test_liquidatedPositionAccruesRewardsForEntireNotificationDelay() public {
+                  // The position becomes liquidated at this block.
                   usdnProtocol.setPosition(position, VERSION, true);
 
                   uint256 pendingAtLiquidation = farming.pendingRewards(TICK, VERSION, INDEX);
-                  assertEq(pendingAtLiquidation, 0, "fixture should start with no pending rewards");
 
+                  // LongFarming is not notified for 100 blocks.
                   vm.roll(block.number + 100);
 
                   uint256 pendingAfterDelay = farming.pendingRewards(TICK, VERSION, INDEX);
-                  assertGt(pendingAfterDelay, 0, "liquidated position must not keep accruing rewards");
+                  uint256 accruedAfterLiquidation = pendingAfterDelay - pendingAtLiquidation;
+                  assertEq(pendingAtLiquidation, 5, "unexpected fixture baseline");
+                  assertEq(pendingAfterDelay, 505, "liquidated position should still be counted for all 100 blocks");
+                  assertEq(accruedAfterLiquidation, 500, "500 rewards were accrued strictly after liquidation");
 
+                  // A third party finally notifies via harvest(). _updateRewards() runs before _isLiquidated().
                   vm.prank(USER_1);
                   (bool isLiquidated,) = farming.harvest(TICK, VERSION, INDEX);
                   assertTrue(isLiquidated, "position must be recognized as liquidated");
@@ -71,10 +76,12 @@ jobs:
                   uint256 ownerPaid = rewardToken.balanceOf(address(this));
                   uint256 notifierPaid = rewardToken.balanceOf(USER_1);
                   assertEq(ownerPaid + notifierPaid, pendingAfterDelay, "all stale rewards become payable");
+                  assertGt(ownerPaid + notifierPaid, pendingAtLiquidation, "post-liquidation rewards were actually paid");
                   assertGt(ownerPaid, 0, "former owner receives post-liquidation rewards");
 
                   emit log_named_uint("pending_at_liquidation", pendingAtLiquidation);
                   emit log_named_uint("pending_after_100_block_delay", pendingAfterDelay);
+                  emit log_named_uint("accrued_after_liquidation", accruedAfterLiquidation);
                   emit log_named_uint("former_owner_paid", ownerPaid);
                   emit log_named_uint("notifier_paid", notifierPaid);
               }
