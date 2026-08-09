@@ -64,7 +64,6 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
     address internal constant ROUTER_ADDR = 0x49f66B1616865b2a59caECb8352bbf2AC80983e1;
     address internal constant PROTOCOL_ADDR = 0x656cB8C6d154Aad29d8771384089be5B5141f01a;
     address internal constant ATTACKER = address(0xB0B);
-    uint256 internal constant FORK_BLOCK = 25_715_274;
     uint256 internal constant INTENDED_DEPOSIT = 0.1 ether;
     uint256 internal constant SDEX_BUFFER_BPS = 50; // ~0.5%, matching observed production Router deposits
     uint256 internal constant SEARCH_HIGH = 0.001 ether;
@@ -80,7 +79,7 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
 
     function setUp() public {
         string memory rpc = vm.envString("MAINNET_RPC_URL");
-        vm.createSelectFork(rpc, FORK_BLOCK);
+        vm.createSelectFork(rpc);
 
         router = IUniversalRouter(ROUTER_ADDR);
         protocol = IUsdnProtocol(PROTOCOL_ADDR);
