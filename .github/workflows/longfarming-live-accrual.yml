@@ -1,4 +1,4 @@
-name: LongFarming current reward campaign triggerability
+name: LongFarming reward authority check
 
 on:
   push:
@@ -7,85 +7,30 @@ on:
   workflow_dispatch:
 
 jobs:
-  current-state:
+  read-only:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+      - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: nightly
-
-      - name: Read current campaign state
-        env:
-          LONG_FARMING: "0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27"
-          FARMING_RANGE: "0x7d85C0905a6E1Ab5837a0b57cD94A419d3a77523"
-          CAMPAIGN_ID: "20"
+      - name: Read current authority and funding
         run: |
-          python - <<'PY'
-          import json, os, subprocess
-          from decimal import Decimal, getcontext
-          getcontext().prec = 80
-
-          long = os.environ['LONG_FARMING']
-          farming = os.environ['FARMING_RANGE']
-          campaign = os.environ['CAMPAIGN_ID']
-          rpcs = [
-              'https://ethereum-rpc.publicnode.com',
-              'https://eth.drpc.org',
-              'https://1rpc.io/eth',
-              'https://eth.llamarpc.com',
-              'https://rpc.flashbots.net',
-              'https://cloudflare-eth.com',
-          ]
-
-          def rpc_cmd(args):
-              errors=[]
-              for rpc in rpcs:
-                  p=subprocess.run(args(rpc),text=True,capture_output=True,timeout=30)
-                  if p.returncode==0:
-                      return p.stdout.strip(),rpc
-                  errors.append({'rpc':rpc,'err':p.stderr.strip()[:200]})
-              raise RuntimeError(json.dumps(errors))
-
-          def call(addr,sig,*args):
-              out,rpc=rpc_cmd(lambda r:['cast','call','--rpc-url',r,addr,sig,*map(str,args)])
-              print('CALL_OK',json.dumps({'rpc':rpc,'sig':sig,'out':out}))
-              return out
-
-          def uint(text):
-              t=text.split()[0]
-              return int(t,16) if t.startswith('0x') else int(t)
-
-          latest_raw,rpc=rpc_cmd(lambda r:['cast','block-number','--rpc-url',r])
-          latest=uint(latest_raw)
-          end=uint(call(farming,'currentEndBlock(uint256)(uint256)',campaign))
-          rpb=uint(call(farming,'currentRewardPerBlock(uint256)(uint256)',campaign))
-          reward_len=uint(call(farming,'rewardInfoLen(uint256)(uint256)',campaign))
-          pending=uint(call(farming,'pendingReward(uint256,address)(uint256)',campaign,long))
-          positions=uint(call(long,'getPositionsCount()(uint256)'))
-          shares=uint(call(long,'getTotalShares()(uint256)'))
-          last_reward_block=uint(call(long,'getLastRewardBlock()(uint256)'))
-
-          last_schedule=None
-          if reward_len:
-              raw=call(farming,'campaignRewardInfo(uint256,uint256)(uint256,uint256)',campaign,reward_len-1)
-              parts=[line.split()[0] for line in raw.splitlines()]
-              last_schedule={'endBlock':int(parts[0]),'rewardPerBlock':int(parts[1])}
-
-          result={
-              'latestBlock':latest,
-              'currentEndBlock':end,
-              'currentRewardPerBlockWei':rpb,
-              'currentRewardPerBlockSDEX':str(Decimal(rpb)/Decimal(10**18)),
-              'rewardInfoLen':reward_len,
-              'lastSchedule':last_schedule,
-              'pendingRewardForLongFarmingWei':pending,
-              'pendingRewardForLongFarmingSDEX':str(Decimal(pending)/Decimal(10**18)),
-              'positionsCount':positions,
-              'totalShares':shares,
-              'longFarmingLastRewardBlock':last_reward_block,
-              'campaignCurrentlyEmitting': bool(rpb>0 and latest<=end),
-              'blocksUntilCurrentEnd': end-latest,
-          }
-          print('CURRENT_TRIGGERABILITY_RESULT',json.dumps(result,sort_keys=True))
-          PY
+          RPC=https://ethereum-rpc.publicnode.com
+          FARM=0x7d85C0905a6E1Ab5837a0b57cD94A419d3a77523
+          LONG=0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27
+          SDEX=0x5DE8ab7E27f6E7A1fFf3E5B337584Aa43961BEeF
+          OWNER=$(cast call --rpc-url $RPC $FARM 'owner()(address)')
+          MANAGER=$(cast call --rpc-url $RPC $FARM 'rewardManager()(address)')
+          echo "FARMING_OWNER=$OWNER"
+          echo "REWARD_MANAGER=$MANAGER"
+          echo "OWNER_CODE=$(cast code --rpc-url $RPC $OWNER)"
+          echo "MANAGER_SDEX=$(cast call --rpc-url $RPC $SDEX 'balanceOf(address)(uint256)' $MANAGER)"
+          echo "MANAGER_ALLOWANCE=$(cast call --rpc-url $RPC $SDEX 'allowance(address,address)(uint256)' $MANAGER $FARM)"
+          echo "FARM_SDEX=$(cast call --rpc-url $RPC $SDEX 'balanceOf(address)(uint256)' $FARM)"
+          echo "LONG_SDEX=$(cast call --rpc-url $RPC $SDEX 'balanceOf(address)(uint256)' $LONG)"
+          echo "CURRENT_RPB=$(cast call --rpc-url $RPC $FARM 'currentRewardPerBlock(uint256)(uint256)' 20)"
+          echo "CURRENT_END=$(cast call --rpc-url $RPC $FARM 'currentEndBlock(uint256)(uint256)' 20)"
+          echo "SCHEDULE_LEN=$(cast call --rpc-url $RPC $FARM 'rewardInfoLen(uint256)(uint256)' 20)"
+          for i in 0 1 2 3 4 5 6; do
+            echo "PHASE_$i=$(cast call --rpc-url $RPC $FARM 'campaignRewardInfo(uint256,uint256)(uint256,uint256)' 20 $i | tr '\n' ',')"
+          done
