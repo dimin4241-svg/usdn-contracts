@@ -20,23 +20,38 @@ jobs:
           SUSDE: '0x9D39A5DE30e57443BfF2A8307A4256c8797A3497'
           USDN: '0xde17a000BA631c5d7c2Bd9FB692EFeA52D90DEE2'
           USDNR: '0x82957d600963Ae0C529c3819Ac7C349c4D49269B'
+          USDT: '0xdAC17F958D2ee523a2206206994597C13D831ec7'
         run: |
           set -euo pipefail
           BLOCK=$(cast block-number --rpc-url "$RPC_URL")
+          BLOCK_TS=$(cast block "$BLOCK" timestamp --rpc-url "$RPC_URL")
           ACCESSOR=$(cast call "$VAULT" 'getAccessor()(address)' --rpc-url "$RPC_URL")
           VI=$(cast call "$ACCESSOR" 'getValueInterpreter()(address)' --rpc-url "$RPC_URL")
           DENOM=$(cast call "$ACCESSOR" 'getDenominationAsset()(address)' --rpc-url "$RPC_URL")
+          USDN_FEED=$(cast call "$VI" 'getAggregatorForPrimitive(address)(address)' "$USDN" --rpc-url "$RPC_URL")
           echo "SUSDN_BLOCK=$BLOCK"
+          echo "SUSDN_BLOCK_TIMESTAMP=$BLOCK_TS"
           echo "ACCESSOR=$ACCESSOR"
           echo "DENOMINATION_ASSET=$DENOM"
           echo "VALUE_INTERPRETER=$VI"
+          echo "USDN_FEED=$USDN_FEED"
           echo "VI_STALE_RATE_THRESHOLD=$(cast call "$VI" 'getStaleRateThreshold()(uint256)' --rpc-url "$RPC_URL")"
           echo "TOTAL_SUPPLY=$(cast call "$VAULT" 'totalSupply()(uint256)' --rpc-url "$RPC_URL")"
           echo "TRACKED_ASSETS=$(cast call "$VAULT" 'getTrackedAssets()(address[])' --rpc-url "$RPC_URL")"
           echo "GAV=$(cast call "$ACCESSOR" 'calcGav()(uint256)' --rpc-url "$RPC_URL")"
           echo "GROSS_SHARE_VALUE=$(cast call "$ACCESSOR" 'calcGrossShareValue()(uint256)' --rpc-url "$RPC_URL")"
+          echo "USDN_DIVISOR=$(cast call "$USDN" 'divisor()(uint256)' --rpc-url "$RPC_URL")"
+          echo "USDN_REBASE_HANDLER=$(cast call "$USDN" 'rebaseHandler()(address)' --rpc-url "$RPC_URL")"
+          echo "USDN_BALANCE_VAULT=$(cast call "$USDN" 'balanceOf(address)(uint256)' "$VAULT" --rpc-url "$RPC_URL")"
+          echo "USDN_SHARES_VAULT=$(cast call "$USDN" 'sharesOf(address)(uint256)' "$VAULT" --rpc-url "$RPC_URL")"
+          echo "USDNR_BALANCE_VAULT=$(cast call "$USDNR" 'balanceOf(address)(uint256)' "$VAULT" --rpc-url "$RPC_URL")"
+          echo "SUSDE_BALANCE_VAULT=$(cast call "$SUSDE" 'balanceOf(address)(uint256)' "$VAULT" --rpc-url "$RPC_URL")"
+          echo "USDT_BALANCE_VAULT=$(cast call "$USDT" 'balanceOf(address)(uint256)' "$VAULT" --rpc-url "$RPC_URL")"
+          echo "USDNR_UNDERLYING_USDN_BALANCE=$(cast call "$USDN" 'balanceOf(address)(uint256)' "$USDNR" --rpc-url "$RPC_URL")"
+          echo "USDNR_UNDERLYING_USDN_SHARES=$(cast call "$USDN" 'sharesOf(address)(uint256)' "$USDNR" --rpc-url "$RPC_URL")"
+          echo "USDNR_TOTAL_SUPPLY=$(cast call "$USDNR" 'totalSupply()(uint256)' --rpc-url "$RPC_URL")"
 
-          for asset in "$SUSDE" "$USDN" "$USDNR"; do
+          for asset in "$SUSDE" "$USDN" "$USDNR" "$USDT"; do
             feed=$(cast call "$VI" 'getAggregatorForPrimitive(address)(address)' "$asset" --rpc-url "$RPC_URL")
             echo "=== ASSET=$asset SYMBOL=$(cast call "$asset" 'symbol()(string)' --rpc-url "$RPC_URL") ==="
             echo "FEED=$feed"
@@ -44,12 +59,26 @@ jobs:
             echo "UNIT=$(cast call "$VI" 'getUnitForPrimitive(address)(uint256)' "$asset" --rpc-url "$RPC_URL")"
             echo "FEED_DESCRIPTION=$(cast call "$feed" 'description()(string)' --rpc-url "$RPC_URL" || true)"
             echo "FEED_DECIMALS=$(cast call "$feed" 'decimals()(uint8)' --rpc-url "$RPC_URL" || true)"
-            echo "FEED_OWNER=$(cast call "$feed" 'owner()(address)' --rpc-url "$RPC_URL" || true)"
-            echo "FEED_LATEST=$(cast call "$feed" 'latestRoundData()(uint80,int256,uint256,uint256,uint80)' --rpc-url "$RPC_URL")"
+            echo "FEED_LATEST=$(cast call "$feed" 'latestRoundData()(uint80,int256,uint256,uint256,uint80)' --rpc-url "$RPC_URL" || true)"
           done
 
-          USDNR_BAL=$(cast call "$USDNR" 'balanceOf(address)(uint256)' "$VAULT" --rpc-url "$RPC_URL")
-          echo "USDNR_BALANCE=$USDNR_BAL"
-          echo "USDNR_VALUE_IN_SUSDE=$(cast call "$VI" 'calcCanonicalAssetValue(address,uint256,address)(uint256)' "$USDNR" "$USDNR_BAL" "$DENOM" --rpc-url "$RPC_URL")"
+          echo '=== USDN FEED SURFACE ==='
+          BYTECODE=$(cast code "$USDN_FEED" --rpc-url "$RPC_URL")
+          echo "USDN_FEED_CODE_BYTES=$(( (${#BYTECODE} - 2) / 2 ))"
+          echo "$BYTECODE" | cast selectors || true
+          for sig in \
+            'owner()(address)' \
+            'getOwner()(address)' \
+            'USDN()(address)' \
+            'usdn()(address)' \
+            'getUsdn()(address)' \
+            'decimals()(uint8)' \
+            'latestAnswer()(int256)' \
+            'latestTimestamp()(uint256)' \
+            'latestRound()(uint256)' \
+            'latestRoundData()(uint80,int256,uint256,uint256,uint80)'; do
+              echo "FEED_CALL $sig"; cast call "$USDN_FEED" "$sig" --rpc-url "$RPC_URL" 2>&1 || true
+          done
+
           echo "ONE_USDNR_IN_SUSDE=$(cast call "$VI" 'calcCanonicalAssetValue(address,uint256,address)(uint256)' "$USDNR" 1000000000000000000 "$DENOM" --rpc-url "$RPC_URL")"
           echo "ONE_USDN_IN_SUSDE=$(cast call "$VI" 'calcCanonicalAssetValue(address,uint256,address)(uint256)' "$USDN" 1000000000000000000 "$DENOM" --rpc-url "$RPC_URL")"
