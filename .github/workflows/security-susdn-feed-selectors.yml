@@ -1,0 +1,52 @@
+name: sUSDN USDN price feed fingerprint
+on:
+  push:
+    branches: [security/susdn-live-config]
+  workflow_dispatch:
+jobs:
+  selectors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Extract feed selectors and probe protocol getters
+        env:
+          RPC_URL: https://ethereum-rpc.publicnode.com
+          FEED: '0xd5004C5D3017862839e83981b110f27EE7B36EAa'
+          PROTOCOL: '0x656cB8C6d154Aad29d8771384089be5B5141f01a'
+        shell: bash
+        run: |
+          set -euo pipefail
+          code=$(cast code "$FEED" --rpc-url "$RPC_URL")
+          echo '=== SELECTORS ==='
+          cast selectors "$code" --resolve || cast selectors "$code" || true
+          echo '=== FEED PROBES ==='
+          for sig in \
+            'USDN_PROTOCOL()(address)' \
+            'decimals()(uint8)' \
+            'description()(string)' \
+            'version()(uint256)' \
+            'latestAnswer()(int256)' \
+            'latestTimestamp()(uint256)' \
+            'latestRound()(uint256)' \
+            'latestRoundData()(uint80,int256,uint256,uint256,uint80)' \
+            'getRoundData(uint80)(uint80,int256,uint256,uint256,uint80)'; do
+            if [[ "$sig" == getRoundData* ]]; then
+              out=$(cast call "$FEED" "$sig" 0 --rpc-url "$RPC_URL" 2>/dev/null || echo REVERT)
+            else
+              out=$(cast call "$FEED" "$sig" --rpc-url "$RPC_URL" 2>/dev/null || echo REVERT)
+            fi
+            echo "$sig => $out"
+          done
+          echo '=== PROTOCOL STATE USED BY LIKELY ADAPTER ==='
+          for sig in \
+            'getLastPrice()(uint128)' \
+            'getLastUpdateTimestamp()(uint128)' \
+            'getBalanceVault()(uint256)' \
+            'getBalanceLong()(uint256)' \
+            'getTotalExpo()(uint256)' \
+            'getUsdn()(address)'; do
+            echo "$sig => $(cast call "$PROTOCOL" "$sig" --rpc-url "$RPC_URL" 2>/dev/null || echo REVERT)"
+          done
