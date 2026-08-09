@@ -1,0 +1,25 @@
+name: USDN pending-open NAV distortion
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/security-susdn-pending-open-nav.yml'
+      - 'security/PendingOpenNavPoC.t.sol'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Checkout exact deployed USDN snapshot and inject PoC
+        run: |
+          set -euo pipefail
+          git clone https://github.com/SmarDex-Ecosystem/usdn-contracts.git /tmp/upstream
+          cd /tmp/upstream
+          git checkout f9171be7feed778213a8c5d4e4dfce674ba16b4d
+          cp "$GITHUB_WORKSPACE/security/PendingOpenNavPoC.t.sol" test/integration/UsdnProtocol/PendingOpenNavPoC.t.sol
+          forge soldeer install
+          forge test --match-contract PendingOpenNavPoC -vvv
