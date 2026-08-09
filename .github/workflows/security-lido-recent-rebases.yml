@@ -7,25 +7,59 @@ jobs:
   read:
     runs-on: ubuntu-latest
     steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Measure recent TokenRebased share-rate jumps
+        shell: bash
+        env:
+          LIDO: '0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84'
+          RPC_URL: 'https://ethereum-rpc.publicnode.com'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, subprocess, urllib.parse, time
+          LIDO='0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84'
+          BASE='https://eth.blockscout.com/api'
+          topic=subprocess.check_output(['cast','keccak','TokenRebased(uint256,uint256,uint256,uint256,uint256,uint256,uint256)'],text=True).strip()
+          head=int(subprocess.check_output(['cast','block-number','--rpc-url','https://ethereum-rpc.publicnode.com'],text=True).strip())
+          # ~75 days at ~12 sec/block, enough to capture many reports.
+          start=max(0,head-540000)
+          q=urllib.parse.urlencode({'module':'logs','action':'getLogs','fromBlock':start,'toBlock':head,'address':LIDO,'topic0':topic})
+          url=BASE+'?'+q
+          out=subprocess.check_output(['curl','-fsSL','--max-time','60',url],text=True)
+          obj=json.loads(out); rows=obj.get('result',[])
+          if isinstance(rows,str): raise SystemExit(rows)
+          print('HEAD',head,'START',start,'TOKEN_REBASED_COUNT',len(rows))
+          data=[]
+          for x in rows:
+              h=x['data'][2:]
+              w=[int(h[i:i+64],16) for i in range(0,len(h),64)]
+              # reportTimestamp is indexed topic1; data = timeElapsed, preShares, preEther, postShares, postEther, feeShares
+              if len(w)<6: continue
+              elapsed,preS,preE,postS,postE,fees=w[:6]
+              if not preS or not postS: continue
+              pre_rate=preE*10**27//preS
+              post_rate=postE*10**27//postS
+              # signed change in 1e9 units of a basis point: delta/pre * 1e13
+              delta=post_rate-pre_rate
+              bp_x1e9=delta*10**13//pre_rate
+              block=int(x['blockNumber'],16)
+              report_ts=int(x['topics'][1],16) if len(x['topics'])>1 else 0
+              data.append((abs(bp_x1e9),bp_x1e9,block,report_ts,elapsed,pre_rate,post_rate,x.get('transactionHash')))
+          data.sort(reverse=True)
+          print('TOP_ABS_REBASE_BEGIN')
+          for _,bp,b,ts,elapsed,pre,post,tx in data[:20]:
+              print('REBASE block',b,'reportTs',ts,'elapsed',elapsed,'bp_x1e9',bp,'preRate',pre,'postRate',post,'tx',tx)
+          print('TOP_ABS_REBASE_END')
+          if data:
+              vals=sorted(abs(r[1]) for r in data)
+              def pct(p): return vals[min(len(vals)-1,int((len(vals)-1)*p))]
+              print('STATS count',len(vals),'median_abs_bp_x1e9',pct(.5),'p90',pct(.9),'p99',pct(.99),'max',max(vals))
+          PY
       - name: Read official latest Lido APR
         shell: bash
         run: |
           set -euo pipefail
           RAW=$(curl -fsSL --max-time 30 'https://eth-api.lido.fi/v1/protocol/steth/apr/last')
           echo "raw=$RAW"
-          python3 - "$RAW" <<'PY'
-          import json, sys
-          x=json.loads(sys.argv[1])
-          print('parsed_json=', json.dumps(x, sort_keys=True))
-          # Be tolerant to API envelope changes and extract the first numeric APR-like field.
-          def walk(o, path=''):
-              if isinstance(o, dict):
-                  for k,v in o.items():
-                      p=f'{path}.{k}' if path else k
-                      if isinstance(v,(int,float)) and 'apr' in k.lower():
-                          print(f'apr_field {p}={v}')
-                      walk(v,p)
-              elif isinstance(o,list):
-                  for i,v in enumerate(o): walk(v,f'{path}[{i}]')
-          walk(x)
-          PY
