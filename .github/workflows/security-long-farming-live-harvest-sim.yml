@@ -1,0 +1,37 @@
+name: USDN LongFarming live harvest simulation
+
+on:
+  push:
+    branches: [security/susdn-live-config]
+  workflow_dispatch:
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Simulate permissionless and self-notified stale harvests
+        env:
+          FARM: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
+          RPC_URL: 'https://ethereum-rpc.publicnode.com'
+          PROBE: '0x000000000000000000000000000000000000BEEF'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo -n 'NOTIFIER_BPS='
+          cast call "$FARM" 'getNotifierRewardsBps()(uint16)' --rpc-url "$RPC_URL"
+          samples=(
+            '74200 0 5 0x11D052d20B3c9F87F7F454443DbC0500930940C4'
+            '79500 2 2 0x4Bfd6E06481439DC78263436Ef53AcCd90E9ea64'
+            '83100 0 9 0xa8ac5e86f6b02584E157E12A2f7faA3ea835E2d7'
+          )
+          for row in "${samples[@]}"; do
+            read -r tick ver idx owner <<< "$row"
+            echo "SAMPLE tick=$tick version=$ver index=$idx owner=$owner"
+            echo -n 'ARBITRARY_NOTIFIER_CALL='
+            cast call "$FARM" 'harvest(int24,uint256,uint256)(bool,uint256)' "$tick" "$ver" "$idx" --from "$PROBE" --rpc-url "$RPC_URL"
+            echo -n 'SELF_NOTIFY_CALL='
+            cast call "$FARM" 'harvest(int24,uint256,uint256)(bool,uint256)' "$tick" "$ver" "$idx" --from "$owner" --rpc-url "$RPC_URL"
+          done
