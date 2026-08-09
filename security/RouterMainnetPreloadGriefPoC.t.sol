@@ -64,8 +64,8 @@ contract VictimDepositWorkflow {
 }
 
 contract TestRouterMainnetPreloadGriefPoC is Test {
-    address internal constant ROUTER_ADDR = 0x49f66b1616865b2a59caecb8352bbf2ac80983e1;
-    address internal constant PROTOCOL_ADDR = 0x656cb8c6d154aad29d8771384089be5b5141f01a;
+    address internal constant ROUTER_ADDR = 0x49f66B1616865b2a59caECb8352bbf2AC80983e1;
+    address internal constant PROTOCOL_ADDR = 0x656cB8C6d154Aad29d8771384089be5B5141f01a;
     address internal constant ATTACKER = address(0xB0B);
     uint256 internal constant INTENDED_DEPOSIT = 0.1 ether;
 
