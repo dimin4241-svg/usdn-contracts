@@ -23,31 +23,31 @@ jobs:
           sig = 'TokenRebased(uint256,uint256,uint256,uint256,uint256,uint256,uint256)'
           topic0 = subprocess.check_output(['cast','keccak',sig], text=True).strip()
           latest = int(subprocess.check_output(['cast','block-number','--rpc-url',rpc], text=True).strip())
-          start = max(0, latest - 55_000)  # roughly the last week
-          events = []
-          for s in range(start, latest + 1, 7500):
-              e = min(latest, s + 7499)
-              raw = subprocess.check_output([
-                  'cast','logs','--rpc-url',rpc,'--from-block',str(s),'--to-block',str(e),
-                  '--address',steth,topic0,'--json'
-              ], text=True)
-              events.extend(json.loads(raw))
-          print(f'latest_block={latest} events={len(events)} topic0={topic0}')
-          for ev in events[-10:]:
-              topics = ev['topics']
-              report_ts = int(topics[1], 16)
+          # Lido rebases daily around 12:30 UTC. The latest 5,000 blocks comfortably cover the current day's report
+          # while avoiding the large historical eth_getLogs range that some public RPCs throttle.
+          start = max(0, latest - 5_000)
+          raw = subprocess.check_output([
+              'cast','logs','--rpc-url',rpc,'--from-block',str(start),'--to-block',str(latest),
+              '--address',steth,topic0,'--json'
+          ], text=True, timeout=90)
+          events = json.loads(raw)
+          print(f'latest_block={latest} start_block={start} events={len(events)} topic0={topic0}')
+          if not events:
+              raise SystemExit('no TokenRebased event in latest 5000 blocks')
+          for ev in events[-3:]:
+              report_ts = int(ev['topics'][1], 16)
               data = ev['data'][2:]
               vals = [int(data[i:i+64],16) for i in range(0,len(data),64)]
-              if len(vals) < 6:
-                  continue
               time_elapsed, pre_shares, pre_eth, post_shares, post_eth, fees = vals[:6]
               pre_rate = pre_eth * 10**18 // pre_shares
               post_rate = post_eth * 10**18 // post_shares
               delta = post_rate - pre_rate
-              bps_x1e6 = delta * 10_000_000_000 // pre_rate  # 1 bp = 1,000,000 here
+              # print bp with 6 decimal places: 10,000 bps per unit ratio
+              delta_bps = delta * 10_000 / pre_rate
               block_num = ev.get('blockNumber') or ev.get('block_number')
               if isinstance(block_num,str):
                   block_num = int(block_num,16) if block_num.startswith('0x') else int(block_num)
               iso = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(report_ts))
-              print(f'block={block_num} report_ts={report_ts} iso={iso} elapsed={time_elapsed} pre_rate={pre_rate} post_rate={post_rate} delta_wei={delta} delta_bps={bps_x1e6/1_000_000:.6f}')
+              apr_pct = (post_rate / pre_rate - 1) * (365*24*60*60 / time_elapsed) * 100
+              print(f'block={block_num} report_ts={report_ts} iso={iso} elapsed={time_elapsed} pre_rate={pre_rate} post_rate={post_rate} delta_wei={delta} delta_bps={delta_bps:.6f} annualized_apr_pct={apr_pct:.6f}')
           PY
