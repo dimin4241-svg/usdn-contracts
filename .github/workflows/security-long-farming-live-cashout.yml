@@ -1,0 +1,36 @@
+name: USDN LongFarming live stale cashout backing
+
+on:
+  push:
+    branches: [security/susdn-live-config]
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Read stale position owners, shares, pending rewards and contract SDEX balance
+        env:
+          FARM: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
+          RPC_URL: 'https://ethereum-rpc.publicnode.com'
+        shell: bash
+        run: |
+          set -euo pipefail
+          positions=('74200 0 5' '79500 2 2' '83100 0 9')
+          for p in "${positions[@]}"; do
+            read -r tick ver idx <<< "$p"
+            echo "STALE tick=$tick version=$ver index=$idx"
+            cast call "$FARM" 'getPositionInfo(int24,uint256,uint256)((address,int24,uint256,uint256,uint256,uint128))' "$tick" "$ver" "$idx" --rpc-url "$RPC_URL"
+            cast call "$FARM" 'pendingRewards(int24,uint256,uint256)(uint256)' "$tick" "$ver" "$idx" --rpc-url "$RPC_URL"
+          done
+          REWARD=$(cast call "$FARM" 'REWARD_TOKEN()(address)' --rpc-url "$RPC_URL" | tr -d '\n')
+          echo "REWARD_TOKEN=$REWARD"
+          echo -n 'FARM_REWARD_BALANCE='
+          cast call "$REWARD" 'balanceOf(address)(uint256)' "$FARM" --rpc-url "$RPC_URL"
+          echo -n 'POSITIONS_COUNT='
+          cast call "$FARM" 'getPositionsCount()(uint256)' --rpc-url "$RPC_URL"
+          echo -n 'TOTAL_SHARES='
+          cast call "$FARM" 'getTotalShares()(uint256)' --rpc-url "$RPC_URL"
