@@ -1,0 +1,44 @@
+name: sUSDN USDN feed reconstruction
+on:
+  push:
+    branches: [security/susdn-live-config]
+  workflow_dispatch:
+jobs:
+  reconstruct:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Reconstruct baseRate from Chainlink wstETH price
+        env:
+          RPC_URL: https://ethereum-rpc.publicnode.com
+          FEED: '0xd5004C5D3017862839e83981b110f27EE7B36EAa'
+          PROTOCOL: '0x656cB8C6d154Aad29d8771384089be5B5141f01a'
+          ETHUSD: '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419'
+          WSTETH: '0x7f39C581F595B53c5cb5bD0b3f8dA6c935E2Ca0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RECON_BLOCK=$(cast block-number --rpc-url "$RPC_URL")"
+          base=$(cast call "$FEED" 'baseRate()(uint256,uint256,uint256)' --rpc-url "$RPC_URL")
+          echo "RECON_BASE_RATE=$base"
+          latest=$(cast call "$ETHUSD" 'latestRoundData()(uint80,int256,uint256,uint256,uint80)' --rpc-url "$RPC_URL")
+          echo "RECON_ETHUSD_LATEST=$latest"
+          eth_answer=$(printf '%s\n' "$latest" | sed -n '2p' | awk '{print $1}')
+          eth_updated=$(printf '%s\n' "$latest" | sed -n '4p' | awk '{print $1}')
+          ratio=$(cast call "$WSTETH" 'stEthPerToken()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')
+          echo "RECON_STETH_PER_WSTETH=$ratio"
+          wst_price=$(python3 - <<PY
+          eth=int('$eth_answer')
+          ratio=int('$ratio')
+          # ETH/USD has 8 decimals, protocol price has 18 decimals
+          print((eth * 10**10 * ratio) // 10**18)
+          PY
+          )
+          echo "RECON_WSTETH_USD_18=$wst_price"
+          echo "RECON_CHAINLINK_TS=$eth_updated"
+          echo "RECON_PROTOCOL_LAST_UPDATE=$(cast call "$PROTOCOL" 'getLastUpdateTimestamp()(uint128)' --rpc-url "$RPC_URL")"
+          echo "RECON_USDN_AT_CHAINLINK_TS=$(cast call "$PROTOCOL" 'usdnPrice(uint128,uint128)(uint256)' "$wst_price" "$eth_updated" --rpc-url "$RPC_URL" 2>&1 || true)"
+          echo "RECON_USDN_AT_NOW=$(cast call "$PROTOCOL" 'usdnPrice(uint128)(uint256)' "$wst_price" --rpc-url "$RPC_URL" 2>&1 || true)"
