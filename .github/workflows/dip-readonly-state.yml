@@ -1,0 +1,27 @@
+name: Dip Accumulator read-only state
+on:
+  workflow_dispatch:
+  push:
+    branches: [security/susdn-live-config]
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - shell: bash
+        env:
+          RPC: https://ethereum-rpc.publicnode.com
+          DIP: '0xaeBcc85a5594e687F6B302405E6E92D616826e03'
+        run: |
+          set -euo pipefail
+          echo "block=$(cast block-number --rpc-url "$RPC")"
+          echo "eth=$(cast balance "$DIP" --rpc-url "$RPC")"
+          echo "asset=$(cast call "$DIP" 'getAsset()(address)' --rpc-url "$RPC")"
+          echo "protocol=$(cast call "$DIP" 'getUsdnProtocol()(address)' --rpc-url "$RPC")"
+          echo "pending=$(cast call "$DIP" 'getPendingAssetsAmount()(uint128)' --rpc-url "$RPC")"
+          echo "version=$(cast call "$DIP" 'getPositionVersion()(uint128)' --rpc-url "$RPC")"
+          echo "lastLiquidated=$(cast call "$DIP" 'getLastLiquidatedVersion()(uint128)' --rpc-url "$RPC")"
+          ASSET=$(cast call "$DIP" 'getAsset()(address)' --rpc-url "$RPC")
+          echo "assetBalance=$(cast call "$ASSET" 'balanceOf(address)(uint256)' "$DIP" --rpc-url "$RPC")"
