@@ -1,0 +1,93 @@
+name: USDN Dip Accumulator live accounting
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - security/usdn-dip-live-accounting
+    paths:
+      - .github/workflows/security-dip-live-accounting.yml
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      RPC_URL: "https://ethereum-rpc.publicnode.com"
+      DIP: "0xaeBcc85a5594e687F6B302405E6E92D616826e03"
+      PROTOCOL: "0x656cB8C6d154Aad29d8771384089be5B5141f01a"
+      WSTETH: "0x7f39C581F595B53c5cb5bD0b3f8dA6c935E2Ca0"
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Read current accounting state
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "BLOCK=$(cast block-number --rpc-url "$RPC_URL")"
+          echo "DIP=$DIP"
+          echo -n 'ASSET='; cast call "$DIP" 'getAsset()(address)' --rpc-url "$RPC_URL"
+          echo -n 'PROTOCOL='; cast call "$DIP" 'getUsdnProtocol()(address)' --rpc-url "$RPC_URL"
+          echo -n 'OWNER='; cast call "$DIP" 'owner()(address)' --rpc-url "$RPC_URL"
+          echo -n 'ASSET_BALANCE='; cast call "$WSTETH" 'balanceOf(address)(uint256)' "$DIP" --rpc-url "$RPC_URL"
+          echo -n 'PENDING_ASSETS='; cast call "$DIP" 'getPendingAssetsAmount()(uint128)' --rpc-url "$RPC_URL"
+          echo -n 'POSITION_VERSION='; cast call "$DIP" 'getPositionVersion()(uint128)' --rpc-url "$RPC_URL"
+          echo -n 'LAST_LIQUIDATED_VERSION='; cast call "$DIP" 'getLastLiquidatedVersion()(uint128)' --rpc-url "$RPC_URL"
+          echo -n 'MIN_ASSET_DEPOSIT='; cast call "$DIP" 'getMinAssetDeposit()(uint256)' --rpc-url "$RPC_URL"
+          echo -n 'MAX_LEVERAGE='; cast call "$DIP" 'getPositionMaxLeverage()(uint256)' --rpc-url "$RPC_URL"
+          echo -n 'CLOSE_LOCKED_UNTIL='; cast call "$DIP" 'getCloseLockedUntil()(uint256)' --rpc-url "$RPC_URL"
+          echo -n 'TIME_LIMITS='; cast call "$DIP" 'getTimeLimits()((uint64,uint64,uint64,uint64))' --rpc-url "$RPC_URL"
+          STATE=$(cast call "$DIP" 'getCurrentStateData()(uint128,uint256,(int24,uint256,uint256))' --rpc-url "$RPC_URL")
+          echo "CURRENT_STATE=$STATE"
+          V=$(cast call "$DIP" 'getPositionVersion()(uint128)' --rpc-url "$RPC_URL" | awk '{print $1}')
+          echo -n 'CURRENT_POSITION_DATA='; cast call "$DIP" 'getPositionData(uint128)((uint128,int24,uint256,uint256,uint256))' "$V" --rpc-url "$RPC_URL"
+          if [ "$V" -gt 0 ]; then
+            PV=$((V-1))
+            echo -n 'PREVIOUS_POSITION_DATA='; cast call "$DIP" 'getPositionData(uint128)((uint128,int24,uint256,uint256,uint256))' "$PV" --rpc-url "$RPC_URL"
+          fi
+
+      - name: Reconstruct recent user claims from events
+        shell: bash
+        run: |
+          set -euo pipefail
+          LATEST=$(cast block-number --rpc-url "$RPC_URL")
+          START=21000000
+          CHUNK=50000
+          : > /tmp/users.txt
+          : > /tmp/events.jsonl
+          for ((from=START; from<=LATEST; from+=CHUNK)); do
+            to=$((from+CHUNK-1)); if ((to>LATEST)); then to=$LATEST; fi
+            fh=$(printf '0x%x' "$from"); th=$(printf '0x%x' "$to")
+            for topic in \
+              'InitiatedAssetsDeposit(address,address,uint256,uint256)' \
+              'AssetsDeposited(address,uint256,uint256)' \
+              'AssetsWithdrawn(address,address,uint256)' \
+              'DepositRefunded(address,uint256)' \
+              'InitiatedAssetsWithdrawal(address)'; do
+              t=$(cast keccak "$topic")
+              cast rpc eth_getLogs "{\"address\":\"$DIP\",\"fromBlock\":\"$fh\",\"toBlock\":\"$th\",\"topics\":[\"$t\"]}" --rpc-url "$RPC_URL" 2>/dev/null | python3 -c 'import json,sys; a=json.load(sys.stdin); [print(json.dumps(x)) for x in a]' >> /tmp/events.jsonl || true
+            done
+          done
+          python3 - <<'PY'
+          import json,re
+          users=set(); n=0
+          for line in open('/tmp/events.jsonl'):
+              try: x=json.loads(line)
+              except: continue
+              n+=1
+              for t in x.get('topics',[])[1:3]:
+                  if len(t)==66:
+                      a='0x'+t[-40:]
+                      if int(a,16): users.add(a)
+          print('EVENT_LOG_COUNT='+str(n))
+          print('USER_COUNT='+str(len(users)))
+          open('/tmp/users.txt','w').write('\n'.join(sorted(users)))
+          PY
+          SUM=0
+          ACTIVE=0
+          while read -r u; do
+            [ -z "$u" ] && continue
+            d=$(cast call "$DIP" 'getUserDepositData(address)((uint40,uint88,uint128))' "$u" --rpc-url "$RPC_URL")
+            vals=$(echo "$d" | tr -cd '0-9 \n' | head -n1)
+            echo "USER=$u DATA=$d"
+          done < /tmp/users.txt
