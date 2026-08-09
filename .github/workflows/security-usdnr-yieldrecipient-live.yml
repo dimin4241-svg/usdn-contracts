@@ -1,0 +1,70 @@
+name: USDNr yield recipient and sUSDN share config
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - security/usdn-susdn-enzyme
+    paths:
+      - .github/workflows/security-usdnr-yieldrecipient-live.yml
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      RPC_URL: "https://ethereum-rpc.publicnode.com"
+      USDNR: "0x82957d600963Ae0C529c3819Ac7C349c4D49269B"
+      USDN: "0xde17a000BA631c5d7c2Bd9FB692EFeA52D90DEE2"
+      SUSDN: "0xF67e2dC041b8A3c39d066037d29f500757b1e886"
+      ACCESSOR: "0x4d54Abd78590bf94c8406d019aFF724DAb659A84"
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Probe USDNr yield and Enzyme share config
+        shell: bash
+        run: |
+          set +e
+          echo '=== USDNR ==='
+          for sig in \
+            'yieldRecipient()(address)' \
+            'totalSupply()(uint256)' \
+            'USDN()(address)'; do
+            echo "USDNR_CALL $sig"
+            cast call "$USDNR" "$sig" --rpc-url "$RPC_URL"
+          done
+          echo -n 'USDNR_USDN_BALANCE='; cast call "$USDN" 'balanceOf(address)(uint256)' "$USDNR" --rpc-url "$RPC_URL"
+          echo -n 'USDNR_USDN_SHARES='; cast call "$USDN" 'sharesOf(address)(uint256)' "$USDNR" --rpc-url "$RPC_URL"
+          echo -n 'USDN_DIVISOR='; cast call "$USDN" 'divisor()(uint256)' --rpc-url "$RPC_URL"
+          echo '=== SUSDN ==='
+          for sig in \
+            'getAccessor()(address)' \
+            'getOwner()(address)' \
+            'getCreator()(address)' \
+            'totalSupply()(uint256)'; do
+            echo "SUSDN_CALL $sig"
+            cast call "$SUSDN" "$sig" --rpc-url "$RPC_URL"
+          done
+          echo -n 'SUSDN_USDN_BALANCE='; cast call "$USDN" 'balanceOf(address)(uint256)' "$SUSDN" --rpc-url "$RPC_URL"
+          echo -n 'SUSDN_USDNR_BALANCE='; cast call "$USDNR" 'balanceOf(address)(uint256)' "$SUSDN" --rpc-url "$RPC_URL"
+          echo '=== COMPTROLLER ==='
+          for sig in \
+            'getVaultProxy()(address)' \
+            'getDenominationAsset()(address)' \
+            'getSharesActionTimelock()(uint256)' \
+            'getLastSharePrice()(uint256)' \
+            'getLastSharePriceUpdate()(uint256)' \
+            'calcGav()(uint256)' \
+            'calcGrossShareValue()(uint256)'; do
+            echo "ACCESSOR_CALL $sig"
+            cast call "$ACCESSOR" "$sig" --rpc-url "$RPC_URL"
+          done
+          echo '=== SELECTORS ==='
+          for sig in \
+            'buyShares(uint256,uint256)' \
+            'buySharesOnBehalf(address,uint256,uint256)' \
+            'redeemSharesInKind(address,uint256,address[],address[])' \
+            'redeemSharesForSpecificAssets(address,uint256,address[],uint256[])' \
+            'getSharesActionTimelock()'; do
+            echo "$(cast sig "$sig") $sig"
+          done
