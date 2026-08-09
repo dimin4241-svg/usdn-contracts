@@ -13,23 +13,34 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
-      - name: Inspect live policies and feed
+      - name: Inspect redemption allowlist and USDN feed
         env:
           RPC_URL: https://ethereum-rpc.publicnode.com
           VAULT: '0xF67e2dC041b8A3c39d066037d29f500757b1e886'
           FEED: '0xd5004C5D3017862839e83981b110f27EE7B36EAa'
+          REDEMPTION_POLICY: '0x823ca839DA344DA59D517b84ce3baB9FFc9f54eE'
+          SUSDE: '0x9D39A5DE30e57443BfF2A8307A4256c8797A3497'
+          USDN: '0xde17a000BA631c5d7c2Bd9FB692EFeA52D90DEE2'
+          USDT: '0xdAC17F958D2ee523a2206206994597C13D831ec7'
+          USDNR: '0x82957d600963Ae0C529c3819Ac7C349c4D49269B'
         run: |
           set -euo pipefail
           ACCESSOR=$(cast call "$VAULT" 'getAccessor()(address)' --rpc-url "$RPC_URL")
           PM=$(cast call "$ACCESSOR" 'getPolicyManager()(address)' --rpc-url "$RPC_URL")
           echo "ACCESSOR=$ACCESSOR"
           echo "POLICY_MANAGER=$PM"
-          POLICIES_RAW=$(cast call "$PM" 'getEnabledPoliciesForFund(address)(address[])' "$ACCESSOR" --rpc-url "$RPC_URL")
-          echo "ENABLED_POLICIES=$POLICIES_RAW"
-          echo "$POLICIES_RAW" | grep -oE '0x[0-9A-Fa-f]{40}' | while read -r p; do
-            echo "--- POLICY=$p ---"
-            echo "IDENTIFIER=$(cast call "$p" 'identifier()(string)' --rpc-url "$RPC_URL" || true)"
-            echo "HOOKS=$(cast call "$p" 'implementedHooks()(uint8[])' --rpc-url "$RPC_URL" || true)"
+          echo "ENABLED_POLICIES=$(cast call "$PM" 'getEnabledPoliciesForFund(address)(address[])' "$ACCESSOR" --rpc-url "$RPC_URL")"
+
+          echo "=== SPECIFIC REDEMPTION POLICY ==="
+          REGISTRY=$(cast call "$REDEMPTION_POLICY" 'getAddressListRegistry()(address)' --rpc-url "$RPC_URL")
+          LISTS=$(cast call "$REDEMPTION_POLICY" 'getListIdsForFund(address)(uint256[])' "$ACCESSOR" --rpc-url "$RPC_URL")
+          echo "ADDRESS_LIST_REGISTRY=$REGISTRY"
+          echo "REDEMPTION_LIST_IDS=$LISTS"
+          for asset in "$SUSDE" "$USDN" "$USDT" "$USDNR"; do
+            echo "ASSET=$(cast call "$asset" 'symbol()(string)' --rpc-url "$RPC_URL") $asset ALLOWED=$(cast call "$REGISTRY" 'isInSomeOfLists(uint256[],address)(bool)' "$LISTS" "$asset" --rpc-url "$RPC_URL")"
+          done
+          echo "$LISTS" | grep -oE '[0-9]+' | while read -r id; do
+            echo "LIST=$id OWNER=$(cast call "$REGISTRY" 'getListOwner(uint256)(address)' "$id" --rpc-url "$RPC_URL") UPDATE_TYPE=$(cast call "$REGISTRY" 'getListUpdateType(uint256)(uint8)' "$id" --rpc-url "$RPC_URL")"
           done
 
           echo "=== USDN FEED ==="
@@ -37,23 +48,11 @@ jobs:
           code=$(cast code "$FEED" --rpc-url "$RPC_URL")
           echo "CODE_BYTES=$(((${#code}-2)/2))"
           echo "LATEST=$(cast call "$FEED" 'latestRoundData()(uint80,int256,uint256,uint256,uint80)' --rpc-url "$RPC_URL")"
-          for sig in \
-            'getPrice()(uint256)' \
-            'getPrice()(int256)' \
-            'price()(uint256)' \
-            'latestAnswer()(int256)' \
-            'decimals()(uint8)' \
-            'USDN()(address)' \
-            'usdn()(address)' \
-            'protocol()(address)' \
-            'getUsdnProtocol()(address)' \
-            'getOracleMiddleware()(address)' \
-            'owner()(address)' \
-            'admin()(address)' \
-            'implementation()(address)' \
-            'asset()(address)' \
-            'BASE_FEED()(address)'; do
-            echo "$sig => $(cast call "$FEED" "$sig" --rpc-url "$RPC_URL" 2>/dev/null || echo REVERT)"
+          echo '--- SELECTORS ---'
+          cast selectors "$code" || true
+          echo '--- 4BYTE LOOKUPS ---'
+          cast selectors "$code" | awk '{print $1}' | sort -u | while read -r sel; do
+            [[ -z "$sel" ]] && continue
+            echo "$sel => $(cast 4byte "$sel" 2>/dev/null | head -5 | tr '\n' ';' || true)"
           done
           echo "EIP1967_IMPL=$(cast storage "$FEED" 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc --rpc-url "$RPC_URL")"
-          echo "EIP1967_ADMIN=$(cast storage "$FEED" 0xb53127684a568b3173ae13b9f8a6016e019e2aA71e19276e2e0c3fdb1b6103 --rpc-url "$RPC_URL" || true)"
