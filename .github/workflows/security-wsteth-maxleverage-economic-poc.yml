@@ -60,12 +60,14 @@ jobs:
                   protocol.setPositionFeeBps(LIVE_POSITION_FEE_BPS);
                   vm.stopPrank();
 
+                  // Ask for leverage well above the protocol maximum. Upstream code must clamp this to its configured 25x max,
+                  // removing our dependence on manually guessing the penalty/tick-rounded liquidation price.
                   posId = setUpUserPositionInLong(
                       OpenParams({
                           user: address(this),
                           untilAction: ProtocolAction.ValidateOpenPosition,
                           positionSize: POSITION_AMOUNT,
-                          desiredLiqPrice: uint128(uint256(params.initialPrice) * 24 / 25),
+                          desiredLiqPrice: uint128(uint256(params.initialPrice) - 1 ether),
                           price: params.initialPrice
                       })
                   );
