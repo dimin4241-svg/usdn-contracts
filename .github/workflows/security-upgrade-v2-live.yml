@@ -1,0 +1,58 @@
+name: USDN v2 storage migration live read-only
+on:
+  workflow_dispatch:
+  push:
+    branches: [security/susdn-live-config]
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Compare migrated SDEX ratio with legacy packed slot
+        shell: bash
+        env:
+          RPC: https://ethereum-rpc.publicnode.com
+          PROTOCOL: '0x656cB8C6d154Aad29d8771384089be5B5141f01a'
+          STORAGE_MAIN: '0xd143a936a6a372725e12535db83a2cfabcb3715dfd88bc350da3399604dc9700'
+          IMPL_SLOT: '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc'
+        run: |
+          set -euo pipefail
+          echo "newRatio=$(cast call "$PROTOCOL" 'getSdexBurnOnDepositRatio()(uint64)' --rpc-url "$RPC")"
+          echo "fallback=$(cast call "$PROTOCOL" 'getFallbackAddress()(address)' --rpc-url "$RPC")"
+          echo "maxRatio=$(cast call "$PROTOCOL" 'getMaxSdexBurnOnDepositRatio()(uint256)' --rpc-url "$RPC" 2>/dev/null || true)"
+          echo "implementationRaw=$(cast storage "$PROTOCOL" "$IMPL_SLOT" --rpc-url "$RPC")"
+          python3 - <<'PY'
+          import os,subprocess
+          rpc=os.environ['RPC']; p=os.environ['PROTOCOL']
+          base=int(os.environ['STORAGE_MAIN'],16)
+          # From IUsdnProtocolTypes.Storage packing:
+          # offset 21 = uint16 positionFee, uint16 vaultFee, uint16 sdexRewards,
+          # uint32 legacy sdexBurn ratio, address feeCollector.
+          slot=base+21
+          raw=subprocess.check_output(['cast','storage',p,hex(slot),'--rpc-url',rpc],text=True).strip()
+          x=int(raw,16)
+          position_fee=(x >> 0) & ((1<<16)-1)
+          vault_fee=(x >> 16) & ((1<<16)-1)
+          rewards_bps=(x >> 32) & ((1<<16)-1)
+          legacy_ratio=(x >> 48) & ((1<<32)-1)
+          collector_int=(x >> 80) & ((1<<160)-1)
+          collector='0x'+collector_int.to_bytes(20,'big').hex()
+          def call(sig):
+              out=subprocess.check_output(['cast','call',p,sig,'--rpc-url',rpc],text=True).strip()
+              return out.split()[0]
+          new_ratio=int(call('getSdexBurnOnDepositRatio()(uint64)'))
+          live_collector=call('getFeeCollector()(address)').lower()
+          print('legacyPackedSlot',hex(slot),raw)
+          print('decoded_positionFeeBps',position_fee,'getter',call('getPositionFeeBps()(uint16)'))
+          print('decoded_vaultFeeBps',vault_fee,'getter',call('getVaultFeeBps()(uint16)'))
+          print('decoded_sdexRewardsRatioBps',rewards_bps,'getter',call('getSdexRewardsRatioBps()(uint16)'))
+          print('decoded_legacySdexBurnRatio',legacy_ratio)
+          print('newSdexBurnRatio',new_ratio)
+          print('legacyEqualsNew',legacy_ratio==new_ratio)
+          print('decoded_feeCollector',collector,'getter',live_collector,'collectorMatches',collector.lower()==live_collector)
+          PY
+          echo 'initializeStorageV2 eth_call after migration (expected InvalidInitialization/revert):'
+          FALLBACK=$(cast call "$PROTOCOL" 'getFallbackAddress()(address)' --rpc-url "$RPC")
+          cast call "$PROTOCOL" 'initializeStorageV2(address)' "$FALLBACK" --rpc-url "$RPC" 2>&1 || true
