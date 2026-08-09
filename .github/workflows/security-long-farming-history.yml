@@ -24,23 +24,26 @@ jobs:
           set -euo pipefail
           export RPC_URL FARM PROTOCOL FROM_BLOCK
           python3 - <<'PY'
-          import json, os, urllib.request, time
+          import json, os, urllib.request, time, subprocess
+          RPC=os.environ['RPC_URL']; start=int(os.environ['FROM_BLOCK'])
 
-          RPC=os.environ['RPC_URL']; FARM=os.environ['FARM'].lower(); start=int(os.environ['FROM_BLOCK'])
           def rpc(method, params):
               data=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode()
-              for attempt in range(6):
+              last=None
+              for attempt in range(8):
                   try:
-                      req=urllib.request.Request(RPC,data=data,headers={'Content-Type':'application/json'})
-                      with urllib.request.urlopen(req,timeout=30) as r:
-                          out=json.load(r)
+                      req=urllib.request.Request(RPC,data=data,headers={
+                          'Content-Type':'application/json',
+                          'User-Agent':'curl/8.0',
+                          'Accept':'application/json'
+                      })
+                      with urllib.request.urlopen(req,timeout=45) as r: out=json.load(r)
                       if 'error' in out: raise RuntimeError(out['error'])
                       return out['result']
-                  except Exception:
-                      if attempt==5: raise
-                      time.sleep(0.5*(attempt+1))
-          end=int(rpc('eth_blockNumber',[]),16)
-          import subprocess
+                  except Exception as e:
+                      last=e; time.sleep(min(5,0.5*(attempt+1)))
+              raise last
+
           def keccak(sig):
               return subprocess.check_output(['cast','keccak',sig], text=True).strip().lower()
           dep=keccak('Deposit(address,int24,uint256,uint256)')
@@ -48,44 +51,40 @@ jobs:
           slash=keccak('Slash(address,uint256,uint256,int24,uint256,uint256)')
           harvest=keccak('Harvest(address,uint256,int24,uint256,uint256)')
           wanted={dep:'Deposit',wd:'Withdraw',slash:'Slash',harvest:'Harvest'}
+          end=int(rpc('eth_blockNumber',[]),16)
           logs=[]
-          chunk=25000
-          for a in range(start,end+1,chunk):
-              b=min(a+chunk-1,end)
+          for a in range(start,end+1,20000):
+              b=min(a+19999,end)
               part=rpc('eth_getLogs',[{'address':os.environ['FARM'],'fromBlock':hex(a),'toBlock':hex(b)}])
-              for x in part:
-                  if x['topics'] and x['topics'][0].lower() in wanted:
-                      logs.append(x)
+              logs.extend(x for x in part if x.get('topics') and x['topics'][0].lower() in wanted)
           logs.sort(key=lambda x:(int(x['blockNumber'],16),int(x['transactionIndex'],16),int(x['logIndex'],16)))
 
           def words(data):
-              h=data[2:]
-              return [int(h[i:i+64],16) for i in range(0,len(h),64)]
+              h=data[2:]; return [int(h[i:i+64],16) for i in range(0,len(h),64)]
           def s24(x):
-              v=x & ((1<<24)-1)
-              return v-(1<<24) if v&(1<<23) else v
-          def pos_from(x, kind):
+              v=x & ((1<<24)-1); return v-(1<<24) if v&(1<<23) else v
+          def pos(x,kind):
               w=words(x['data'])
-              if kind in ('Deposit','Withdraw'):
-                  return (s24(w[0]),w[1],w[2])
-              if kind=='Slash':
-                  return (s24(w[2]),w[3],w[4])
-              if kind=='Harvest':
-                  return (s24(w[1]),w[2],w[3])
+              if kind in ('Deposit','Withdraw'): return (s24(w[0]),w[1],w[2])
+              if kind=='Slash': return (s24(w[2]),w[3],w[4])
+              return (s24(w[1]),w[2],w[3])
 
-          active={}; count=0; zero_start=start; zero_intervals=[]; mismatches=[]
-          first_dep=None
+          active={}; count=0; zero_start=None; zero_intervals=[]; first_dep=None; mismatches=[]
+          counts={k:0 for k in wanted.values()}
           for x in logs:
-              kind=wanted[x['topics'][0].lower()]; block=int(x['blockNumber'],16)
+              kind=wanted[x['topics'][0].lower()]; counts[kind]+=1; block=int(x['blockNumber'],16)
               if kind=='Deposit':
-                  p=pos_from(x,kind)
+                  p=pos(x,kind)
+                  if first_dep is None:
+                      first_dep=block
+                      zero_start=block  # pre-deployment/first-user interval is not treated as an exploitable empty cycle
                   if p in active: mismatches.append(('duplicate_deposit',block,p))
-                  if count==0 and zero_start is not None:
+                  if count==0 and zero_start is not None and block>zero_start:
                       zero_intervals.append((zero_start,block-1,block-zero_start))
-                  active[p]={'block':block,'tx':x['transactionHash'],'owner':'0x'+x['topics'][1][-40:]}
-                  count+=1; first_dep=first_dep or block; zero_start=None
+                  active[p]={'block':block,'owner':'0x'+x['topics'][1][-40:],'tx':x['transactionHash']}
+                  count+=1; zero_start=None
               elif kind in ('Withdraw','Slash'):
-                  p=pos_from(x,kind)
+                  p=pos(x,kind)
                   if p not in active: mismatches.append(('remove_missing',block,p,kind))
                   else: active.pop(p)
                   count-=1
@@ -93,48 +92,22 @@ jobs:
           if count==0 and zero_start is not None: zero_intervals.append((zero_start,end,end-zero_start+1))
 
           print('CURRENT_BLOCK',end)
-          print('EVENT_COUNTS', {k:sum(1 for x in logs if wanted[x['topics'][0].lower()]==k) for k in wanted.values()})
+          print('EVENT_COUNTS',counts)
           print('RECONSTRUCTED_COUNT',count)
           print('FIRST_DEPOSIT_BLOCK',first_dep)
           print('ZERO_INTERVALS_TOTAL',len(zero_intervals))
           for z in zero_intervals:
-              # emphasize intervals overlapping nonzero reward epochs (last known nonzero ends 25056370)
-              if z[0] <= 25056370 and z[2] >= 1:
-                  print('ZERO_INTERVAL_PRE_EMISSION_END',*z)
-          print('ACTIVE_BEGIN')
-          for (tick,ver,idx),meta in sorted(active.items()):
-              print(f'{tick}\t{ver}\t{idx}\t{meta["block"]}\t{meta["owner"]}\t{meta["tx"]}')
-          print('ACTIVE_END')
+              print('ZERO_INTERVAL',*z,'OVERLAPS_REWARDS',int(z[0] <= 25056370))
           if mismatches: print('MISMATCHES',mismatches)
+          print('ACTIVE_BEGIN')
+          with open('/tmp/active.tsv','w') as f:
+              for (tick,ver,idx),m in sorted(active.items()):
+                  print(f'{tick}\t{ver}\t{idx}\t{m["block"]}\t{m["owner"]}\t{m["tx"]}')
+                  f.write(f'{tick}\t{ver}\t{idx}\n')
+          print('ACTIVE_END')
           PY
 
-          echo '--- live tick-version check for reconstructed active positions ---'
-          # Re-run the parser compactly and write active.tsv, then compare each stored tickVersion to protocol current version.
-          python3 - <<'PY' > /tmp/active.tsv
-          import json, os, urllib.request, time, subprocess
-          RPC=os.environ['RPC_URL']; start=int(os.environ['FROM_BLOCK']); end=int(json.load(urllib.request.urlopen(urllib.request.Request(RPC,data=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_blockNumber','params':[]}).encode(),headers={'Content-Type':'application/json'})))['result'],16)
-          def rpc(p):
-              data=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_getLogs','params':[p]}).encode();
-              for a in range(5):
-                  try:
-                      with urllib.request.urlopen(urllib.request.Request(RPC,data=data,headers={'Content-Type':'application/json'}),timeout=30) as r:return json.load(r)['result']
-                  except Exception:
-                      if a==4: raise
-                      time.sleep(a+1)
-          def k(s): return subprocess.check_output(['cast','keccak',s],text=True).strip().lower()
-          dep=k('Deposit(address,int24,uint256,uint256)'); wd=k('Withdraw(address,int24,uint256,uint256)'); sl=k('Slash(address,uint256,uint256,int24,uint256,uint256)')
-          active={}
-          for a in range(start,end+1,25000):
-              for x in rpc({'address':os.environ['FARM'],'fromBlock':hex(a),'toBlock':hex(min(a+24999,end))}):
-                  if not x['topics']: continue
-                  t=x['topics'][0].lower(); h=x['data'][2:]; w=[int(h[i:i+64],16) for i in range(0,len(h),64)]
-                  def s(v):
-                      v&=(1<<24)-1; return v-(1<<24) if v&(1<<23) else v
-                  if t==dep: p=(s(w[0]),w[1],w[2]); active[p]=1
-                  elif t==wd: active.pop((s(w[0]),w[1],w[2]),None)
-                  elif t==sl: active.pop((s(w[2]),w[3],w[4]),None)
-          for p in sorted(active): print(*p,sep='\t')
-          PY
+          echo '--- live tick-version check ---'
           while IFS=$'\t' read -r tick ver idx; do
             cur=$(cast call "$PROTOCOL" 'getTickVersion(int24)(uint256)' "$tick" --rpc-url "$RPC_URL")
             info=$(cast call "$FARM" 'getPositionInfo(int24,uint256,uint256)((address,int24,uint256,uint256,uint256,uint128))' "$tick" "$ver" "$idx" --rpc-url "$RPC_URL" 2>/dev/null || true)
