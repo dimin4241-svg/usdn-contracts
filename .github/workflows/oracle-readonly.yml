@@ -1,0 +1,26 @@
+name: Oracle middleware read-only
+on:
+  workflow_dispatch:
+  push:
+    branches: [security/susdn-live-config]
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - shell: bash
+        env:
+          RPC: https://ethereum-rpc.publicnode.com
+          PROTOCOL: '0x656cB8C6d154Aad29d8771384089be5B5141f01a'
+        run: |
+          set -euo pipefail
+          ORACLE=$(cast call "$PROTOCOL" 'getOracleMiddleware()(address)' --rpc-url "$RPC")
+          echo "oracle=$ORACLE"
+          echo "validationDelay=$(cast call "$ORACLE" 'getValidationDelay()(uint256)' --rpc-url "$RPC")"
+          echo "lowLatencyDelay=$(cast call "$ORACLE" 'getLowLatencyDelay()(uint16)' --rpc-url "$RPC")"
+          echo "pythDelay=$(cast call "$ORACLE" 'getPythRecentPriceDelay()(uint64)' --rpc-url "$RPC")"
+          echo "dataStreamsDelay=$(cast call "$ORACLE" 'getDataStreamRecentPriceDelay()(uint256)' --rpc-url "$RPC" 2>/dev/null || true)"
+          echo "proxyVerifier=$(cast call "$ORACLE" 'getProxyVerifier()(address)' --rpc-url "$RPC" 2>/dev/null || true)"
+          echo "reportVersion=$(cast call "$ORACLE" 'getReportVersion()(uint256)' --rpc-url "$RPC" 2>/dev/null || true)"
