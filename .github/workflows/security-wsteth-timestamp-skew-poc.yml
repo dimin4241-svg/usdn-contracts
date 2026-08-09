@@ -1,0 +1,71 @@
+name: wstETH oracle timestamp-rate skew PoC
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [security/susdn-live-config]
+
+jobs:
+  poc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Run upstream middleware regression PoC
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/SmarDex-Ecosystem/usdn-contracts.git /tmp/usdn
+          cd /tmp/usdn
+          git checkout 0e6822448f574f836b1c18a1893eeba49293dac9
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          forge soldeer install
+
+          cat > test/unit/Middlewares/WstethOracle/TimestampRateSkew.t.sol <<'SOL'
+          // SPDX-License-Identifier: UNLICENSED
+          pragma solidity 0.8.26;
+
+          import { MOCK_PYTH_DATA } from "../utils/Constants.sol";
+          import { WstethBaseFixture } from "../utils/Fixtures.sol";
+          import { PriceInfo } from "../../../../src/interfaces/OracleMiddleware/IOracleMiddlewareTypes.sol";
+          import { IUsdnProtocolTypes as Types } from "../../../../src/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
+
+          contract TestWstethTimestampRateSkew is WstethBaseFixture {
+              function test_sameHistoricalEthReportGetsDifferentWstethPriceAfterRateChange() public {
+                  uint128 targetTimestamp = uint128(block.timestamp - 600);
+                  uint256 rateBefore = wsteth.stEthPerToken();
+
+                  PriceInfo memory beforePrice = wstethOracle.parseAndValidatePrice{
+                      value: wstethOracle.validationCost(MOCK_PYTH_DATA, Types.ProtocolAction.ValidateClosePosition)
+                  }("", targetTimestamp, Types.ProtocolAction.ValidateClosePosition, MOCK_PYTH_DATA);
+
+                  // Simulate a Lido rebase after the historical T+24 oracle observation but before validation executes.
+                  uint256 rateAfter = rateBefore + rateBefore / 10_000; // +1 bp
+                  vm.mockCall(address(wsteth), abi.encodeWithSignature("stEthPerToken()"), abi.encode(rateAfter));
+
+                  PriceInfo memory afterPrice = wstethOracle.parseAndValidatePrice{
+                      value: wstethOracle.validationCost(MOCK_PYTH_DATA, Types.ProtocolAction.ValidateClosePosition)
+                  }("", targetTimestamp, Types.ProtocolAction.ValidateClosePosition, MOCK_PYTH_DATA);
+
+                  // Same historical ETH report and exact same PriceInfo.timestamp...
+                  assertEq(afterPrice.timestamp, beforePrice.timestamp, "timestamp changed unexpectedly");
+                  // ...but a different execution-time wstETH rate changes the historical wstETH price.
+                  assertGt(afterPrice.price, beforePrice.price, "wstETH price did not move with execution-time rate");
+                  assertGt(afterPrice.neutralPrice, beforePrice.neutralPrice, "neutral price did not move");
+
+                  uint256 expectedDelta = beforePrice.price / 10_000;
+                  assertApproxEqAbs(afterPrice.price - beforePrice.price, expectedDelta, 2, "unexpected 1bp price delta");
+
+                  emit log_named_uint("historical_price_timestamp", beforePrice.timestamp);
+                  emit log_named_uint("execution_block_timestamp", block.timestamp);
+                  emit log_named_uint("rate_before", rateBefore);
+                  emit log_named_uint("rate_after", rateAfter);
+                  emit log_named_uint("price_before", beforePrice.price);
+                  emit log_named_uint("price_after", afterPrice.price);
+                  emit log_named_uint("price_delta", afterPrice.price - beforePrice.price);
+              }
+          }
+          SOL
+
+          forge test --match-contract TestWstethTimestampRateSkew -vvvv
