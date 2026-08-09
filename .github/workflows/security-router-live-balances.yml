@@ -1,0 +1,41 @@
+name: USDN Universal Router live balances read-only
+on:
+  workflow_dispatch:
+  push:
+    branches: [security/susdn-live-config]
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Read Router balances and approvals
+        shell: bash
+        env:
+          RPC: https://ethereum-rpc.publicnode.com
+          ROUTER: '0x49f66b1616865b2a59caecb8352bbf2ac80983e1'
+          PROTOCOL: '0x656cB8C6d154Aad29d8771384089be5B5141f01a'
+          WSTETH: '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0'
+          USDN: '0xde17a000BA631c5d7c2Bd9FB692EFeA52D90DEE2'
+          WUSDN: '0x99999999999999Cc837C997B882957daFdCb1Af9'
+          WETH: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
+          SDEX: '0x5DE8ab1e7cAE7C966c63f5bcC8f5B6c5d4F0f2F2'
+        run: |
+          set -euo pipefail
+          echo "block=$(cast block-number --rpc-url "$RPC")"
+          echo "eth=$(cast balance "$ROUTER" --rpc-url "$RPC")"
+          REBAL=$(cast call "$PROTOCOL" 'getRebalancer()(address)' --rpc-url "$RPC")
+          echo "rebalancer=$REBAL"
+          for item in WSTETH:$WSTETH USDN:$USDN WUSDN:$WUSDN WETH:$WETH SDEX:$SDEX; do
+            name=${item%%:*}; token=${item#*:}
+            bal=$(cast call "$token" 'balanceOf(address)(uint256)' "$ROUTER" --rpc-url "$RPC" 2>/dev/null || echo CALL_FAILED)
+            echo "$name.balance=$bal"
+            if [[ "$bal" != CALL_FAILED ]]; then
+              printf '%s.allowanceProtocol=' "$name"
+              cast call "$token" 'allowance(address,address)(uint256)' "$ROUTER" "$PROTOCOL" --rpc-url "$RPC" 2>/dev/null || echo CALL_FAILED
+              printf '%s.allowanceRebalancer=' "$name"
+              cast call "$token" 'allowance(address,address)(uint256)' "$ROUTER" "$REBAL" --rpc-url "$RPC" 2>/dev/null || echo CALL_FAILED
+            fi
+          done
+          echo "USDN.shares=$(cast call "$USDN" 'sharesOf(address)(uint256)' "$ROUTER" --rpc-url "$RPC")"
