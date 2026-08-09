@@ -13,30 +13,43 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
-      - name: Reconstruct LongFarming lifecycle and check live stored positions
+      - name: Reconstruct LongFarming lifecycle and inspect stored positions
         env:
-          RPC_URL: https://ethereum-rpc.publicnode.com
           FARM: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
           PROTOCOL: '0x656cb8c6d154aad29d8771384089be5b5141f01a'
           FROM_BLOCK: '21600000'
         shell: bash
         run: |
           set -euo pipefail
-          export RPC_URL FARM PROTOCOL FROM_BLOCK
+          export FARM PROTOCOL FROM_BLOCK
           python3 - <<'PY'
           import json, os, time, subprocess
-          RPC=os.environ['RPC_URL']; start=int(os.environ['FROM_BLOCK'])
+
+          RPCS=[
+              'https://rpc.flashbots.net',
+              'https://eth.llamarpc.com',
+              'https://ethereum-rpc.publicnode.com',
+          ]
+          start=int(os.environ['FROM_BLOCK'])
 
           def rpc(method, params):
-              cmd=['cast','rpc','--rpc-url',RPC,method] + [json.dumps(p,separators=(',',':')) for p in params]
-              last=None
-              for attempt in range(8):
-                  try:
-                      out=subprocess.check_output(cmd,text=True,stderr=subprocess.STDOUT,timeout=60)
-                      return json.loads(out)
-                  except Exception as e:
-                      last=e; time.sleep(min(5,0.5*(attempt+1)))
-              raise last
+              payload=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params},separators=(',',':'))
+              errors=[]
+              for endpoint in RPCS:
+                  for attempt in range(2):
+                      try:
+                          out=subprocess.check_output([
+                              'curl','-fsS','--max-time','30','-H','content-type: application/json',
+                              '--data',payload,endpoint
+                          ],text=True,stderr=subprocess.STDOUT,timeout=35)
+                          obj=json.loads(out)
+                          if obj.get('error'):
+                              raise RuntimeError(obj['error'])
+                          return obj['result'], endpoint
+                      except Exception as e:
+                          errors.append(f'{endpoint}: {e}')
+                          time.sleep(0.3*(attempt+1))
+              raise RuntimeError(' | '.join(errors[-6:]))
 
           def keccak(sig): return subprocess.check_output(['cast','keccak',sig],text=True).strip().lower()
           dep=keccak('Deposit(address,int24,uint256,uint256)')
@@ -44,13 +57,18 @@ jobs:
           slash=keccak('Slash(address,uint256,uint256,int24,uint256,uint256)')
           harvest=keccak('Harvest(address,uint256,int24,uint256,uint256)')
           wanted={dep:'Deposit',wd:'Withdraw',slash:'Slash',harvest:'Harvest'}
-          end=int(rpc('eth_blockNumber',[]),16)
+          end_hex, endpoint=rpc('eth_blockNumber',[])
+          end=int(end_hex,16)
+          print('HEAD_RPC',endpoint,'CURRENT_BLOCK',end)
+
           logs=[]
-          for a in range(start,end+1,10000):
-              b=min(a+9999,end)
-              filt={'address':os.environ['FARM'],'fromBlock':hex(a),'toBlock':hex(b)}
-              part=rpc('eth_getLogs',[filt])
+          chunk=2500
+          for a in range(start,end+1,chunk):
+              b=min(a+chunk-1,end)
+              part, used=rpc('eth_getLogs',[{'address':os.environ['FARM'],'fromBlock':hex(a),'toBlock':hex(b)}])
               logs.extend(x for x in part if x.get('topics') and x['topics'][0].lower() in wanted)
+              if part:
+                  print('LOG_CHUNK',a,b,'RPC',used,'RAW',len(part))
           logs.sort(key=lambda x:(int(x['blockNumber'],16),int(x['transactionIndex'],16),int(x['logIndex'],16)))
 
           def words(data):
@@ -65,31 +83,29 @@ jobs:
 
           active={}; count=0; zero_start=None; zero_intervals=[]; first_dep=None; mismatches=[]
           counts={k:0 for k in wanted.values()}
+          lifecycle=[]
           for x in logs:
-              kind=wanted[x['topics'][0].lower()]; counts[kind]+=1; block=int(x['blockNumber'],16)
+              kind=wanted[x['topics'][0].lower()]; counts[kind]+=1; block=int(x['blockNumber'],16); p=pos(x,kind)
               if kind=='Deposit':
-                  p=pos(x,kind)
                   if first_dep is None: first_dep=block
                   if p in active: mismatches.append(('duplicate_deposit',block,p))
                   if count==0 and zero_start is not None and block>zero_start:
                       zero_intervals.append((zero_start,block-1,block-zero_start))
                   active[p]={'block':block,'owner':'0x'+x['topics'][1][-40:],'tx':x['transactionHash']}
-                  count+=1; zero_start=None
+                  count+=1; zero_start=None; lifecycle.append((block,'Deposit',p,count))
               elif kind in ('Withdraw','Slash'):
-                  p=pos(x,kind)
                   if p not in active: mismatches.append(('remove_missing',block,p,kind))
                   else: active.pop(p)
-                  count-=1
+                  count-=1; lifecycle.append((block,kind,p,count))
                   if count==0: zero_start=block
           if count==0 and zero_start is not None: zero_intervals.append((zero_start,end,end-zero_start+1))
 
-          print('CURRENT_BLOCK',end)
           print('EVENT_COUNTS',counts)
           print('RECONSTRUCTED_COUNT',count)
           print('FIRST_DEPOSIT_BLOCK',first_dep)
           print('ZERO_INTERVALS_TOTAL',len(zero_intervals))
           for z in zero_intervals:
-              print('ZERO_INTERVAL',*z,'OVERLAPS_REWARDS',int(z[0] <= 25056370))
+              print('ZERO_INTERVAL',*z,'OVERLAPS_NONZERO_EMISSIONS',int(z[0] <= 25056370))
           if mismatches: print('MISMATCHES',mismatches)
           print('ACTIVE_BEGIN')
           with open('/tmp/active.tsv','w') as f:
@@ -99,9 +115,11 @@ jobs:
           print('ACTIVE_END')
           PY
 
-          echo '--- live tick-version check ---'
+          RPC_URL=https://rpc.flashbots.net
+          echo '--- live tick-version / reward check ---'
           while IFS=$'\t' read -r tick ver idx; do
             cur=$(cast call "$PROTOCOL" 'getTickVersion(int24)(uint256)' "$tick" --rpc-url "$RPC_URL")
-            info=$(cast call "$FARM" 'getPositionInfo(int24,uint256,uint256)((address,uint128,uint256,uint256))' "$tick" "$ver" "$idx" --rpc-url "$RPC_URL" 2>/dev/null || true)
-            echo "ACTIVE_POSITION tick=$tick storedVersion=$ver currentVersion=$cur index=$idx info=$info"
+            pending=$(cast call "$FARM" 'pendingRewards(int24,uint256,uint256)(uint256)' "$tick" "$ver" "$idx" --rpc-url "$RPC_URL" 2>/dev/null || true)
+            info=$(cast call "$FARM" 'getPositionInfo(int24,uint256,uint256)((address,int24,uint256,uint256,uint256,uint128))' "$tick" "$ver" "$idx" --rpc-url "$RPC_URL" 2>/dev/null || true)
+            echo "ACTIVE_POSITION tick=$tick storedVersion=$ver currentVersion=$cur index=$idx pending=$pending info=$info"
           done < /tmp/active.tsv
