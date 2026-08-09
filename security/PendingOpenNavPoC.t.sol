@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.26;
 
-import { UsdnProtocolBaseFixture } from "../test/unit/UsdnProtocol/utils/Fixtures.sol";
-import { IUsdnProtocolTypes } from "../src/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
+// This file is copied by CI into test/integration/UsdnProtocol/ of the exact deployed USDN snapshot.
+import { UsdnProtocolBaseFixture } from "../../unit/UsdnProtocol/utils/Fixtures.sol";
+import { IUsdnProtocolTypes } from "../../../src/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
 
 /// @notice Proves that an unvalidated leveraged long temporarily changes USDN NAV when price moves,
 /// and that validateOpenPosition later cancels that temporary PnL.
