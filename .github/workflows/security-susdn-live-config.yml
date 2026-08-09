@@ -1,0 +1,81 @@
+name: sUSDN live Enzyme configuration
+
+on:
+  push:
+    branches: [security/susdn-live-config]
+  workflow_dispatch:
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Snapshot live sUSDN configuration and valuation
+        env:
+          RPC_URL: https://ethereum-rpc.publicnode.com
+          VAULT: '0xF67e2dC041b8A3c39d066037d29f500757b1e886'
+        shell: bash
+        run: |
+          set -euo pipefail
+          call() { cast call "$1" "$2" ${3:-} --rpc-url "$RPC_URL" 2>/dev/null || echo CALL_FAILED; }
+
+          echo "SUSDN_BLOCK=$(cast block-number --rpc-url "$RPC_URL")"
+          echo "SUSDN_NAME=$(cast call "$VAULT" 'name()(string)' --rpc-url "$RPC_URL")"
+          echo "SUSDN_SYMBOL=$(cast call "$VAULT" 'symbol()(string)' --rpc-url "$RPC_URL")"
+          echo "SUSDN_TOTAL_SUPPLY=$(cast call "$VAULT" 'totalSupply()(uint256)' --rpc-url "$RPC_URL")"
+          echo "SUSDN_OWNER=$(cast call "$VAULT" 'getOwner()(address)' --rpc-url "$RPC_URL")"
+          echo "SUSDN_CREATOR=$(cast call "$VAULT" 'getCreator()(address)' --rpc-url "$RPC_URL")"
+          echo "SUSDN_VAULT_LIB=$(cast call "$VAULT" 'getVaultLib()(address)' --rpc-url "$RPC_URL")"
+          echo "SUSDN_FREE_TRANSFER=$(cast call "$VAULT" 'sharesAreFreelyTransferable()(bool)' --rpc-url "$RPC_URL")"
+          ACCESSOR=$(cast call "$VAULT" 'getAccessor()(address)' --rpc-url "$RPC_URL")
+          echo "SUSDN_ACCESSOR=$ACCESSOR"
+          TRACKED=$(cast call "$VAULT" 'getTrackedAssets()(address[])' --rpc-url "$RPC_URL")
+          echo "SUSDN_TRACKED_ASSETS=$TRACKED"
+          echo "SUSDN_ACTIVE_EXTERNAL_POSITIONS=$(cast call "$VAULT" 'getActiveExternalPositions()(address[])' --rpc-url "$RPC_URL")"
+
+          DENOM=$(cast call "$ACCESSOR" 'getDenominationAsset()(address)' --rpc-url "$RPC_URL")
+          VI=$(cast call "$ACCESSOR" 'getValueInterpreter()(address)' --rpc-url "$RPC_URL")
+          echo "SUSDN_DENOMINATION_ASSET=$DENOM"
+          echo "SUSDN_VALUE_INTERPRETER=$VI"
+          echo "SUSDN_INTEGRATION_MANAGER=$(cast call "$ACCESSOR" 'getIntegrationManager()(address)' --rpc-url "$RPC_URL")"
+          echo "SUSDN_POLICY_MANAGER=$(cast call "$ACCESSOR" 'getPolicyManager()(address)' --rpc-url "$RPC_URL")"
+          echo "SUSDN_FEE_MANAGER=$(cast call "$ACCESSOR" 'getFeeManager()(address)' --rpc-url "$RPC_URL")"
+          echo "SUSDN_SHARES_TIMELOCK=$(cast call "$ACCESSOR" 'getSharesActionTimelock()(uint256)' --rpc-url "$RPC_URL")"
+          echo "SUSDN_GAV=$(cast call "$ACCESSOR" 'calcGav()(uint256)' --rpc-url "$RPC_URL")"
+          echo "SUSDN_GROSS_SHARE_VALUE=$(cast call "$ACCESSOR" 'calcGrossShareValue()(uint256)' --rpc-url "$RPC_URL")"
+
+          echo "DENOM_SYMBOL=$(cast call "$DENOM" 'symbol()(string)' --rpc-url "$RPC_URL" 2>/dev/null || true)"
+          echo "DENOM_DECIMALS=$(cast call "$DENOM" 'decimals()(uint8)' --rpc-url "$RPC_URL" 2>/dev/null || true)"
+          echo "DENOM_BALANCE=$(cast call "$DENOM" 'balanceOf(address)(uint256)' "$VAULT" --rpc-url "$RPC_URL" 2>/dev/null || true)"
+
+          printf '%s\n' "$TRACKED" | grep -oE '0x[0-9a-fA-F]{40}' > /tmp/tracked.txt || true
+          n=0
+          while read -r asset; do
+            [[ -z "$asset" ]] && continue
+            n=$((n+1))
+            symbol=$(cast call "$asset" 'symbol()(string)' --rpc-url "$RPC_URL" 2>/dev/null || echo UNKNOWN)
+            name=$(cast call "$asset" 'name()(string)' --rpc-url "$RPC_URL" 2>/dev/null || echo UNKNOWN)
+            dec=$(cast call "$asset" 'decimals()(uint8)' --rpc-url "$RPC_URL" 2>/dev/null | awk '{print $1}' || echo 18)
+            bal=$(cast call "$asset" 'balanceOf(address)(uint256)' "$VAULT" --rpc-url "$RPC_URL" 2>/dev/null | awk '{print $1}' || echo 0)
+            supported=$(cast call "$VI" 'isSupportedAsset(address)(bool)' "$asset" --rpc-url "$RPC_URL" 2>/dev/null || echo UNKNOWN)
+            derivative=$(cast call "$VI" 'isSupportedDerivativeAsset(address)(bool)' "$asset" --rpc-url "$RPC_URL" 2>/dev/null || echo UNKNOWN)
+            primitive=$(cast call "$VI" 'isSupportedPrimitiveAsset(address)(bool)' "$asset" --rpc-url "$RPC_URL" 2>/dev/null || echo UNKNOWN)
+            unit=$(python3 - <<PY
+          print(10 ** int('$dec'))
+          PY
+          )
+            value=$(cast call "$VI" 'calcCanonicalAssetValue(address,uint256,address)(uint256)' "$asset" "$unit" "$DENOM" --rpc-url "$RPC_URL" 2>/dev/null || echo CALL_FAILED)
+            echo "TRACKED_${n}_ADDRESS=$asset"
+            echo "TRACKED_${n}_SYMBOL=$symbol"
+            echo "TRACKED_${n}_NAME=$name"
+            echo "TRACKED_${n}_DECIMALS=$dec"
+            echo "TRACKED_${n}_BALANCE=$bal"
+            echo "TRACKED_${n}_SUPPORTED=$supported"
+            echo "TRACKED_${n}_PRIMITIVE=$primitive"
+            echo "TRACKED_${n}_DERIVATIVE=$derivative"
+            echo "TRACKED_${n}_ONE_TOKEN_VALUE_IN_DENOM=$value"
+          done < /tmp/tracked.txt
+          echo "SUSDN_TRACKED_COUNT=$n"
