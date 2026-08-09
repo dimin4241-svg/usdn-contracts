@@ -1,0 +1,47 @@
+name: USDN close delegation validator malleability proof
+
+on:
+  push:
+    branches:
+      - security/usdn-close-validator-malleability
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FOUNDRY_PROFILE: default
+
+jobs:
+  exact-snapshot-proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Switch source tree to exact deployed-era protocol snapshot
+        run: |
+          set -euo pipefail
+          cp security/CloseDelegationValidatorMalleabilityPoC.t.sol /tmp/CloseDelegationValidatorMalleabilityPoC.t.sol
+          git checkout f9171be7feed778213a8c5d4e4dfce674ba16b4d -- .
+          mkdir -p security
+          cp /tmp/CloseDelegationValidatorMalleabilityPoC.t.sol security/CloseDelegationValidatorMalleabilityPoC.t.sol
+
+      - name: Install exact snapshot dependencies
+        run: npm ci && forge soldeer install
+
+      - name: Run focused PoC
+        run: |
+          set -euo pipefail
+          forge test --match-contract TestCloseDelegationValidatorMalleability -vv 2>&1 | tee /tmp/poc.log
+          echo '--- EVIDENCE ---'
+          grep 'EVIDENCE_' /tmp/poc.log || true
