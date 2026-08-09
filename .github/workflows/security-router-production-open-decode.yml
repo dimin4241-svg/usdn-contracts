@@ -1,0 +1,91 @@
+name: USDN Router production open-position decode
+
+on:
+  push:
+    branches:
+      - security/usdn-router-softfail-sweep
+
+permissions:
+  contents: read
+
+jobs:
+  decode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Decode known production INITIATE_OPEN calldata
+        env:
+          RPC_URL: 'https://ethereum-rpc.publicnode.com'
+          ROUTER: '0x49f66B1616865b2a59caECb8352bbf2AC80983e1'
+        run: |
+          set -euo pipefail
+          TXS=(
+            0x3837cb39cc189cd508149b6cf708eacf48ae100b6210145e8209724a68c8bcbb
+            0x1ba264737db96a5232028b77936cfbd3ca41038032e92944ffa951d9c272f951
+            0xa46ac49499cffb26c87656c2c75933e353f37058816b7d11779dbe20669354c7
+            0x7774f7552226071d12c895c3837b6ad79db061960462a25fb27402385bf1ecb8
+            0xcba7506f315cfcceb5957a06ab53607d49e32efddbe282cfd5664a0c226be167
+          )
+          : > /tmp/open-inputs.txt
+          for h in "${TXS[@]}"; do
+            dest=$(cast tx "$h" to --rpc-url "$RPC_URL")
+            block=$(cast tx "$h" blockNumber --rpc-url "$RPC_URL")
+            input=$(cast tx "$h" input --rpc-url "$RPC_URL")
+            echo "OPEN_FETCH_TX=$h OPEN_FETCH_BLOCK=$block OPEN_FETCH_TO=$dest"
+            if [[ "${dest,,}" != "${ROUTER,,}" ]]; then
+              echo "OPEN_FETCH_SKIP_NON_ROUTER=$h"
+              continue
+            fi
+            printf '%s %s %s\n' "$h" "$block" "$input" >> /tmp/open-inputs.txt
+          done
+
+          python3 - <<'PY'
+          EXECUTE_SELECTOR='24856bc3'
+          INITIATE_OPEN=0x22
+          CONTRACT_BALANCE=1<<255
+          def u256(b,o): return int.from_bytes(b[o:o+32],'big')
+          def addr(b,o): return '0x'+b[o+12:o+32].hex()
+          def dyn(b,o):
+              n=u256(b,o); return b[o+32:o+32+n]
+          def decode_execute(cd):
+              assert cd[:4].hex()==EXECUTE_SELECTOR, cd[:4].hex()
+              b=cd[4:]; cmds=dyn(b,u256(b,0)); io=u256(b,32); n=u256(b,io); head=io+32
+              ins=[]
+              for i in range(n):
+                  rel=u256(b,head+32*i); ins.append(dyn(b,head+rel))
+              return cmds,ins
+          def decode_open(enc):
+              p=u256(enc,0)
+              return dict(payment=u256(enc,p), amount=u256(enc,p+32), desiredLiqPrice=u256(enc,p+64),
+                          userMaxPrice=u256(enc,p+96), userMaxLeverage=u256(enc,p+128),
+                          to=addr(enc,p+160), validator=addr(enc,p+192), deadline=u256(enc,p+224),
+                          ethAmount=u256(enc,p+320))
+          total=0; sentinels=0
+          for line in open('/tmp/open-inputs.txt'):
+              h,block_s,inp=line.strip().split(); cd=bytes.fromhex(inp.removeprefix('0x'))
+              cmds,ins=decode_execute(cd)
+              print('OPEN_PROD_TX',h)
+              print('OPEN_PROD_BLOCK',block_s)
+              print('OPEN_PROD_COMMANDS',' '.join(f'{x:02x}' for x in cmds))
+              ix=[i for i,c in enumerate(cmds) if (c&0x3f)==INITIATE_OPEN]
+              print('OPEN_PROD_INITIATE_OPEN_INDICES',ix)
+              for i in ix:
+                  d=decode_open(ins[i]); total+=1; sentinels += int(d['amount']==CONTRACT_BALANCE)
+                  print('OPEN_PROD_INDEX',i)
+                  print('OPEN_PROD_PAYMENT',d['payment'])
+                  print('OPEN_PROD_AMOUNT_WEI',d['amount'])
+                  print('OPEN_PROD_AMOUNT_WSTETH',f"{d['amount']/1e18:.18f}" if d['amount']!=CONTRACT_BALANCE else 'CONTRACT_BALANCE')
+                  print('OPEN_PROD_AMOUNT_IS_CONTRACT_BALANCE',d['amount']==CONTRACT_BALANCE)
+                  print('OPEN_PROD_DESIRED_LIQ_PRICE',d['desiredLiqPrice'])
+                  print('OPEN_PROD_USER_MAX_PRICE',d['userMaxPrice'])
+                  print('OPEN_PROD_USER_MAX_LEVERAGE',d['userMaxLeverage'])
+                  print('OPEN_PROD_TO',d['to'])
+                  print('OPEN_PROD_VALIDATOR',d['validator'])
+                  print('OPEN_PROD_ETH_AMOUNT',d['ethAmount'])
+              print('---')
+          print('OPEN_PROD_DECODED_ACTIONS',total)
+          print('OPEN_PROD_CONTRACT_BALANCE_ACTIONS',sentinels)
+          PY
