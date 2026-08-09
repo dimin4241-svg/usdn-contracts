@@ -1,0 +1,209 @@
+name: LongFarming live slash scan
+
+on:
+  push:
+    branches:
+      - audit/longfarming-post-liquidation-rewards
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Scan read-only Ethereum logs
+        env:
+          LONG_FARMING: "0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27"
+          USDN_PROTOCOL: "0x656cB8C6d154Aad29d8771384089be5B5141f01a"
+          CREATION_TX: "0x7368a9b0b2c5bb595ed6100018913a4f632b531bb199775cf9f733231ae07f67"
+          TARGET_TICK: "82000"
+          TARGET_VERSION: "0"
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, time, urllib.request, urllib.error
+          from datetime import datetime, timezone
+
+          LONG = os.environ['LONG_FARMING'].lower()
+          USDN = os.environ['USDN_PROTOCOL'].lower()
+          CREATION_TX = os.environ['CREATION_TX']
+          TARGET_TICK = int(os.environ['TARGET_TICK'])
+          TARGET_VERSION = int(os.environ['TARGET_VERSION'])
+
+          endpoints = [
+              'https://ethereum-rpc.publicnode.com',
+              'https://eth.llamarpc.com',
+              'https://rpc.flashbots.net',
+              'https://cloudflare-eth.com',
+          ]
+          request_id = 0
+          endpoint = None
+
+          def raw_rpc(url, method, params, timeout=30):
+              global request_id
+              request_id += 1
+              body = json.dumps({'jsonrpc':'2.0','id':request_id,'method':method,'params':params}).encode()
+              req = urllib.request.Request(url, data=body, headers={'Content-Type':'application/json','User-Agent':'LongFarming-readonly-audit'})
+              with urllib.request.urlopen(req, timeout=timeout) as r:
+                  out = json.loads(r.read())
+              if 'error' in out:
+                  raise RuntimeError(str(out['error']))
+              return out['result']
+
+          for url in endpoints:
+              try:
+                  cid = raw_rpc(url, 'eth_chainId', [])
+                  if cid == '0x1':
+                      endpoint = url
+                      print('RPC', url)
+                      break
+              except Exception as e:
+                  print('RPC failed', url, repr(e))
+          if not endpoint:
+              raise SystemExit('No Ethereum RPC endpoint available')
+
+          def rpc(method, params, timeout=30):
+              return raw_rpc(endpoint, method, params, timeout)
+
+          def keccak_sig(sig):
+              return subprocess.check_output(['cast','keccak',sig], text=True).strip().lower()
+
+          slash_topic = keccak_sig('Slash(address,uint256,uint256,int24,uint256,uint256)')
+          deposit_topic = keccak_sig('Deposit(address,int24,uint256,uint256)')
+          liquidated_tick_topic = keccak_sig('LiquidatedTick(int24,uint256,uint256,uint256,int256)')
+          print('topics', slash_topic, deposit_topic, liquidated_tick_topic)
+
+          receipt = rpc('eth_getTransactionReceipt', [CREATION_TX])
+          if not receipt:
+              raise SystemExit('Creation receipt not found')
+          deployment_block = int(receipt['blockNumber'], 16)
+          latest = int(rpc('eth_blockNumber', []), 16)
+          print('deployment_block', deployment_block, 'latest', latest)
+
+          def topic_uint(v):
+              if v < 0:
+                  v = (1 << 256) + v
+              return '0x' + format(v, '064x')
+
+          def get_logs(address, topics, start, end, initial_chunk=20_000):
+              logs = []
+              cur = start
+              chunk = initial_chunk
+              while cur <= end:
+                  hi = min(end, cur + chunk - 1)
+                  try:
+                      part = rpc('eth_getLogs', [{
+                          'address': address,
+                          'fromBlock': hex(cur),
+                          'toBlock': hex(hi),
+                          'topics': topics,
+                      }], timeout=45)
+                      logs.extend(part)
+                      cur = hi + 1
+                      if chunk < initial_chunk:
+                          chunk = min(initial_chunk, chunk * 2)
+                  except Exception as e:
+                      if chunk <= 500:
+                          raise
+                      chunk = max(500, chunk // 2)
+                      print('shrink chunk to', chunk, 'at', cur, 'because', repr(e)[:180])
+              return logs
+
+          # Directly locate the underlying tick liquidation using indexed tick/version.
+          liq_logs = get_logs(
+              USDN,
+              [liquidated_tick_topic, topic_uint(TARGET_TICK), topic_uint(TARGET_VERSION)],
+              deployment_block,
+              latest,
+          )
+          print('TARGET_LIQUIDATED_TICK_LOGS', len(liq_logs))
+          for x in liq_logs:
+              print(json.dumps({
+                  'block': int(x['blockNumber'],16),
+                  'tx': x['transactionHash'],
+                  'logIndex': int(x['logIndex'],16),
+              }, sort_keys=True))
+
+          # Fetch all LongFarming slash logs, then keep tick 82000/version 0.
+          slash_logs = get_logs(LONG, [slash_topic], deployment_block, latest)
+          print('TOTAL_SLASH_LOGS', len(slash_logs))
+
+          def words(data):
+              h = data[2:]
+              return [int(h[i:i+64], 16) for i in range(0, len(h), 64)]
+
+          def int256(v):
+              return v - (1 << 256) if v >= (1 << 255) else v
+
+          targets = []
+          for x in slash_logs:
+              w = words(x['data'])
+              if len(w) < 5:
+                  continue
+              notifier_rewards, owner_rewards, tick_raw, ver, idx = w[:5]
+              tick = int256(tick_raw)
+              if tick == TARGET_TICK and ver == TARGET_VERSION:
+                  notifier = '0x' + x['topics'][1][-40:]
+                  targets.append({
+                      'block': int(x['blockNumber'],16),
+                      'tx': x['transactionHash'],
+                      'notifier': notifier.lower(),
+                      'notifierRewards': notifier_rewards,
+                      'ownerRewards': owner_rewards,
+                      'tick': tick,
+                      'version': ver,
+                      'index': idx,
+                  })
+          print('TARGET_SLASHES', len(targets))
+
+          # Deposit logs are needed to recover the former owner for self-slash proof.
+          dep_logs = get_logs(LONG, [deposit_topic], deployment_block, latest)
+          deposits = {}
+          for x in dep_logs:
+              w = words(x['data'])
+              if len(w) < 3:
+                  continue
+              tick = int256(w[0]); ver = w[1]; idx = w[2]
+              owner = '0x' + x['topics'][1][-40:]
+              deposits[(tick,ver,idx)] = {
+                  'owner': owner.lower(),
+                  'block': int(x['blockNumber'],16),
+                  'tx': x['transactionHash'],
+              }
+          print('TOTAL_DEPOSITS', len(deposits))
+
+          liq_block = min((int(x['blockNumber'],16) for x in liq_logs), default=None)
+
+          block_cache = {}
+          def block_meta(n):
+              if n not in block_cache:
+                  b = rpc('eth_getBlockByNumber',[hex(n),False])
+                  ts = int(b['timestamp'],16)
+                  block_cache[n] = {'timestamp': ts, 'utc': datetime.fromtimestamp(ts, timezone.utc).isoformat()}
+              return block_cache[n]
+
+          for t in sorted(targets, key=lambda z:z['block']):
+              dep = deposits.get((t['tick'],t['version'],t['index']))
+              tx = rpc('eth_getTransactionByHash',[t['tx']])
+              caller = tx['from'].lower() if tx else None
+              out = dict(t)
+              out['caller'] = caller
+              out['deposit'] = dep
+              out['selfSlash'] = bool(dep and caller == dep['owner'] and t['notifier'] == dep['owner'])
+              out['notifierRewardsSDEX'] = f"{t['notifierRewards']/1e18:.18f}"
+              out['ownerRewardsSDEX'] = f"{t['ownerRewards']/1e18:.18f}"
+              out['totalSlashRewardsSDEX'] = f"{(t['notifierRewards']+t['ownerRewards'])/1e18:.18f}"
+              out['slashTime'] = block_meta(t['block'])
+              if liq_block is not None:
+                  out['liquidationBlock'] = liq_block
+                  out['liquidationTime'] = block_meta(liq_block)
+                  out['delayBlocks'] = t['block'] - liq_block
+                  out['delaySeconds'] = block_meta(t['block'])['timestamp'] - block_meta(liq_block)['timestamp']
+              print('TARGET_RESULT', json.dumps(out, sort_keys=True))
+
+          if liq_block is not None and not targets:
+              raise SystemExit('Underlying liquidation found but no target slash found')
+          PY
