@@ -1,0 +1,42 @@
+name: USDN rebase handler live read-only
+on:
+  workflow_dispatch:
+  push:
+    branches: [security/susdn-live-config]
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Read live USDN rebase handler
+        shell: bash
+        env:
+          RPC: https://ethereum-rpc.publicnode.com
+          USDN: '0xde17a000BA631c5d7c2Bd9FB692EFeA52D90DEE2'
+          PROTOCOL: '0x656cB8C6d154Aad29d8771384089be5B5141f01a'
+        run: |
+          set -euo pipefail
+          HANDLER=$(cast call "$USDN" 'rebaseHandler()(address)' --rpc-url "$RPC")
+          echo "handler=$HANDLER"
+          echo "handlerCodeSize=$(cast codesize "$HANDLER" --rpc-url "$RPC")"
+          echo "handlerCodeHash=$(cast codehash "$HANDLER" --rpc-url "$RPC")"
+          echo "divisor=$(cast call "$USDN" 'divisor()(uint256)' --rpc-url "$RPC")"
+          echo "protocolRebaseThreshold=$(cast call "$PROTOCOL" 'getUsdnRebaseThreshold()(uint128)' --rpc-url "$RPC")"
+          echo "protocolTargetUsdnPrice=$(cast call "$PROTOCOL" 'getTargetUsdnPrice()(uint128)' --rpc-url "$RPC")"
+          for sig in \
+            'owner()(address)' \
+            'USDN()(address)' \
+            'usdn()(address)' \
+            'PAIR()(address)' \
+            'pair()(address)' \
+            'POOL()(address)' \
+            'pool()(address)' \
+            'REBASE_HANDLER()(address)' \
+            'rebaseHandler()(address)'; do
+            printf '%s => ' "$sig"
+            cast call "$HANDLER" "$sig" --rpc-url "$RPC" 2>/dev/null || echo CALL_FAILED
+          done
+          echo 'selectors:'
+          cast selectors "$(cast code "$HANDLER" --rpc-url "$RPC")" || true
