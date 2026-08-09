@@ -1,0 +1,68 @@
+name: USDnr live backing invariant
+
+on:
+  push:
+    branches: [security/susdn-live-config]
+  workflow_dispatch:
+
+jobs:
+  backing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Check USDnr backing and feed surface
+        env:
+          RPC_URL: https://ethereum-rpc.publicnode.com
+          USDN: '0xde17a000BA631c5d7c2Bd9FB692EFeA52D90DEE2'
+          USDNR: '0x82957d600963Ae0C529c3819Ac7C349c4D49269B'
+          FEED: '0xd5004C5D3017862839e83981b110f27EE7B36EAa'
+        shell: bash
+        run: |
+          set -euo pipefail
+          block=$(cast block-number --rpc-url "$RPC_URL")
+          d=$(cast call "$USDN" 'divisor()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')
+          shares=$(cast call "$USDN" 'sharesOf(address)(uint256)' "$USDNR" --rpc-url "$RPC_URL" | awk '{print $1}')
+          tokenBal=$(cast call "$USDN" 'balanceOf(address)(uint256)' "$USDNR" --rpc-url "$RPC_URL" | awk '{print $1}')
+          supply=$(cast call "$USDNR" 'totalSupply()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')
+          underlying=$(cast call "$USDNR" 'USDN()(address)' --rpc-url "$RPC_URL")
+          yieldRecipient=$(cast call "$USDNR" 'getYieldRecipient()(address)' --rpc-url "$RPC_URL")
+          reserve=$(cast call "$USDNR" 'RESERVE()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')
+          read -r down surplus yieldable < <(python3 - <<PY
+          d=int('$d'); shares=int('$shares'); supply=int('$supply'); reserve=int('$reserve')
+          down=shares//d
+          surplus=max(0,down-supply)
+          yieldable=max(0,surplus-reserve)
+          print(down,surplus,yieldable)
+          PY
+          )
+          echo "USDNR_BLOCK=$block"
+          echo "USDNR_UNDERLYING=$underlying"
+          echo "USDNR_DIVISOR=$d"
+          echo "USDNR_UNDERLYING_SHARES=$shares"
+          echo "USDNR_UNDERLYING_BALANCE_CLOSEST=$tokenBal"
+          echo "USDNR_UNDERLYING_BALANCE_DOWN=$down"
+          echo "USDNR_TOTAL_SUPPLY=$supply"
+          echo "USDNR_RESERVE=$reserve"
+          echo "USDNR_SURPLUS_BEFORE_RESERVE=$surplus"
+          echo "USDNR_WITHDRAWABLE_YIELD=$yieldable"
+          echo "USDNR_YIELD_RECIPIENT=$yieldRecipient"
+          python3 - <<PY
+          down=int('$down'); supply=int('$supply'); reserve=int('$reserve')
+          assert down >= supply + reserve, (down,supply,reserve)
+          print('USDNR_FULLY_BACKED=true')
+          print('USDNR_BACKING_EXCESS_WEI=',down-supply)
+          PY
+          echo "FEED_CODEHASH=$(cast codehash "$FEED" --rpc-url "$RPC_URL")"
+          code=$(cast code "$FEED" --rpc-url "$RPC_URL")
+          echo "FEED_CODE_BYTES=$(( (${#code}-2)/2 ))"
+          echo "FEED_OWNER=$(cast call "$FEED" 'owner()(address)' --rpc-url "$RPC_URL" 2>/dev/null || echo NO_OWNER_GETTER)"
+          echo "FEED_ADMIN=$(cast call "$FEED" 'admin()(address)' --rpc-url "$RPC_URL" 2>/dev/null || echo NO_ADMIN_GETTER)"
+          echo "FEED_USDN=$(cast call "$FEED" 'USDN()(address)' --rpc-url "$RPC_URL" 2>/dev/null || echo NO_USDN_GETTER)"
+          echo "FEED_USDN_LOWER=$(cast call "$FEED" 'usdn()(address)' --rpc-url "$RPC_URL" 2>/dev/null || echo NO_usdn_GETTER)"
+          echo "FEED_PROTOCOL=$(cast call "$FEED" 'USDN_PROTOCOL()(address)' --rpc-url "$RPC_URL" 2>/dev/null || echo NO_PROTOCOL_GETTER)"
+          echo "FEED_PROTOCOL_LOWER=$(cast call "$FEED" 'protocol()(address)' --rpc-url "$RPC_URL" 2>/dev/null || echo NO_protocol_GETTER)"
+          echo "FEED_DECIMALS=$(cast call "$FEED" 'decimals()(uint8)' --rpc-url "$RPC_URL")"
+          echo "FEED_LATEST=$(cast call "$FEED" 'latestRoundData()(uint80,int256,uint256,uint256,uint80)' --rpc-url "$RPC_URL")"
