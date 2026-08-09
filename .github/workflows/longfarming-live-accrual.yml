@@ -1,4 +1,4 @@
-name: LongFarming reward authority check
+name: LongFarming event topics
 
 on:
   push:
@@ -7,30 +7,14 @@ on:
   workflow_dispatch:
 
 jobs:
-  read-only:
+  topics:
     runs-on: ubuntu-latest
     steps:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: nightly
-      - name: Read current authority and funding
+      - name: Print event topics
         run: |
-          RPC=https://ethereum-rpc.publicnode.com
-          FARM=0x7d85C0905a6E1Ab5837a0b57cD94A419d3a77523
-          LONG=0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27
-          SDEX=0x5DE8ab7E27f6E7A1fFf3E5B337584Aa43961BEeF
-          OWNER=$(cast call --rpc-url $RPC $FARM 'owner()(address)')
-          MANAGER=$(cast call --rpc-url $RPC $FARM 'rewardManager()(address)')
-          echo "FARMING_OWNER=$OWNER"
-          echo "REWARD_MANAGER=$MANAGER"
-          echo "OWNER_CODE=$(cast code --rpc-url $RPC $OWNER)"
-          echo "MANAGER_SDEX=$(cast call --rpc-url $RPC $SDEX 'balanceOf(address)(uint256)' $MANAGER)"
-          echo "MANAGER_ALLOWANCE=$(cast call --rpc-url $RPC $SDEX 'allowance(address,address)(uint256)' $MANAGER $FARM)"
-          echo "FARM_SDEX=$(cast call --rpc-url $RPC $SDEX 'balanceOf(address)(uint256)' $FARM)"
-          echo "LONG_SDEX=$(cast call --rpc-url $RPC $SDEX 'balanceOf(address)(uint256)' $LONG)"
-          echo "CURRENT_RPB=$(cast call --rpc-url $RPC $FARM 'currentRewardPerBlock(uint256)(uint256)' 20)"
-          echo "CURRENT_END=$(cast call --rpc-url $RPC $FARM 'currentEndBlock(uint256)(uint256)' 20)"
-          echo "SCHEDULE_LEN=$(cast call --rpc-url $RPC $FARM 'rewardInfoLen(uint256)(uint256)' 20)"
-          for i in 0 1 2 3 4 5 6; do
-            echo "PHASE_$i=$(cast call --rpc-url $RPC $FARM 'campaignRewardInfo(uint256,uint256)(uint256,uint256)' 20 $i | tr '\n' ',')"
-          done
+          echo "DEPOSIT_TOPIC=$(cast keccak 'Deposit(address,int24,uint256,uint256)')"
+          echo "WITHDRAW_TOPIC=$(cast keccak 'Withdraw(address,int24,uint256,uint256)')"
+          echo "SLASH_TOPIC=$(cast keccak 'Slash(address,uint256,uint256,int24,uint256,uint256)')"
