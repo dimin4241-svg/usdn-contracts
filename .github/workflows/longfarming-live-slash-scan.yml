@@ -67,18 +67,17 @@ jobs:
                   params['topic0_1_opr'] = 'and'
               if 'topic2' in extra_topics:
                   params['topic1_2_opr'] = 'and'
+                  params['topic0_2_opr'] = 'and'
               url = BLOCKSCOUT + '?' + urllib.parse.urlencode(params)
               req = urllib.request.Request(url, headers={'User-Agent':'LongFarming-readonly-audit'})
               with urllib.request.urlopen(req, timeout=90) as r:
                   out = json.loads(r.read())
               print('BLOCKSCOUT_STATUS', out.get('status'), out.get('message'))
-              result = out.get('result', [])
-              if isinstance(result, str):
-                  raise RuntimeError(result)
+              result = out.get('result')
+              if not isinstance(result, list):
+                  raise RuntimeError(str(result or out.get('message')))
               return result
 
-          # Blockscout's indexed Logs API allows an entire-history query with topics,
-          # avoiding archive-RPC range limits and performing no state-changing calls.
           liq_logs = blockscout_logs(
               USDN,
               LIQ,
@@ -131,7 +130,6 @@ jobs:
                   'tick': tick,
                   'version': version,
                   'index': index,
-                  # Current _slash() emits (0, rewards) exactly when owner == notifier.
                   'ownerEqualsNotifier': notifier_rewards == 0 and owner_rewards > 0,
               })
 
