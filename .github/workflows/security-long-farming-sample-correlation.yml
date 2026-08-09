@@ -12,66 +12,127 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
-      - name: Find exact liquidation blocks by archived tickVersion transition
+      - name: Correlate real Slash events with LiquidatedTick logs
         env:
+          BLOCKSCOUT: https://eth.blockscout.com/api
           LIVE_RPC: https://ethereum-rpc.publicnode.com
           PROTOCOL: '0x656cb8c6d154aad29d8771384089be5b5141f01a'
+          FARM: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
           PROVIDER: '0x7d85C0905a6E1Ab5837a0b57cD94A419d3a77523'
           CAMPAIGN: '20'
           DEPLOYMENT_BLOCK: '21681344'
         shell: bash
         run: |
           set -euo pipefail
+          export BLOCKSCOUT LIVE_RPC PROTOCOL FARM PROVIDER CAMPAIGN DEPLOYMENT_BLOCK
 
-          ARCHIVE_RPCS=(
-            'https://rpc.flashbots.net'
-            'https://eth.llamarpc.com'
-            'https://1rpc.io/eth'
-            'https://eth.drpc.org'
-            'https://ethereum.publicnode.com'
-          )
+          python3 - <<'PY'
+          import json, os, subprocess, time
+          from urllib.parse import urlencode
 
-          version_at() {
-            local tick="$1" block="$2" out rpc
-            for rpc in "${ARCHIVE_RPCS[@]}"; do
-              if out=$(cast call "$PROTOCOL" 'getTickVersion(int24)(uint256)' "$tick" --block "$block" --rpc-url "$rpc" 2>/dev/null | awk '{print $1}'); then
-                if [[ "$out" =~ ^[0-9]+$ ]]; then
-                  echo "$out"
-                  return 0
-                fi
-              fi
-            done
-            echo "no archive endpoint served tick=$tick block=$block" >&2
-            return 1
-          }
+          BASE=os.environ['BLOCKSCOUT']; PROTOCOL=os.environ['PROTOCOL']; FARM=os.environ['FARM']
+          DEPLOY=int(os.environ['DEPLOYMENT_BLOCK'])
 
-          correlate() {
-            local tick="$1" stored="$2" slash="$3"
-            local lo="$DEPLOYMENT_BLOCK" hi="$slash"
-            local vlo vhi
-            vlo=$(version_at "$tick" "$lo")
-            vhi=$(version_at "$tick" "$hi")
-            echo "SAMPLE_BEGIN tick=$tick storedVersion=$stored slashBlock=$slash versionAtLo=$vlo versionAtSlash=$vhi"
-            if [ "$vhi" -le "$stored" ]; then
-              echo "NO_LIQUIDATION_BEFORE_SLASH"
-              return 1
-            fi
-            while [ $((hi-lo)) -gt 1 ]; do
-              local mid=$(((lo+hi)/2)) vmid
-              vmid=$(version_at "$tick" "$mid")
-              if [ "$vmid" -gt "$stored" ]; then hi="$mid"; else lo="$mid"; fi
-            done
-            local before after
-            before=$(version_at "$tick" $((hi-1)))
-            after=$(version_at "$tick" "$hi")
-            echo "LIQUIDATION_TRANSITION tick=$tick storedVersion=$stored liquidationBlock=$hi versionBefore=$before versionAfter=$after slashBlock=$slash delayBlocks=$((slash-hi))"
-            echo "SAMPLE_END"
-          }
+          def keccak(sig):
+              return subprocess.check_output(['cast','keccak',sig],text=True).strip().lower()
+          LIQ=keccak('LiquidatedTick(int24,uint256,uint256,uint256,int256)')
+          SLASH=keccak('Slash(address,uint256,uint256,int24,uint256,uint256)')
 
-          correlate 73167 1 21827817
-          correlate 79755 2 22618625
+          def get_json(url):
+              last=None
+              for attempt in range(7):
+                  try:
+                      out=subprocess.check_output([
+                          'curl','-fsS','--retry','2','--retry-delay','1','--max-time','30',
+                          '-H','accept: application/json',url
+                      ],text=True,stderr=subprocess.STDOUT,timeout=35)
+                      return json.loads(out)
+                  except Exception as e:
+                      last=e; time.sleep(min(3,0.5*(attempt+1)))
+              raise last
 
-          echo '--- campaign reward segments ---'
+          def legacy_logs(address, topic0, a, b):
+              q=urlencode({'module':'logs','action':'getLogs','fromBlock':a,'toBlock':b,'address':address,'topic0':topic0})
+              obj=get_json(BASE+'?'+q)
+              res=obj.get('result',[])
+              if isinstance(res,str):
+                  if 'No logs' in res or obj.get('status')=='0': return []
+                  raise RuntimeError(res)
+              return res
+
+          def signed_int24_topic(t):
+              v=int(t,16)&((1<<24)-1)
+              return v-(1<<24) if v&(1<<23) else v
+
+          def words(data):
+              h=(data or '0x')[2:]
+              return [int(h[i:i+64],16) for i in range(0,len(h),64) if h[i:i+64]]
+
+          def find_liq(tick,version,slash_block):
+              for window in (5000,20000,100000,500000,2000000,6000000):
+                  a=max(DEPLOY,slash_block-window); b=slash_block
+                  logs=legacy_logs(PROTOCOL,LIQ,a,b)
+                  print('LIQ_WINDOW',tick,version,a,b,'raw',len(logs))
+                  matches=[]
+                  for x in logs:
+                      ts=x.get('topics',[])
+                      if len(ts)<3: continue
+                      if signed_int24_topic(ts[1])==tick and int(ts[2],16)==version:
+                          matches.append(x)
+                  if matches:
+                      matches.sort(key=lambda x:int(x['blockNumber'],16))
+                      return matches[-1]
+                  # if an API cap was reached, expanding further is not useful; split backward windows instead.
+                  if len(logs)>=950:
+                      step=window
+                      end=a-1
+                      for _ in range(20):
+                          if end<DEPLOY: break
+                          start=max(DEPLOY,end-step+1)
+                          more=legacy_logs(PROTOCOL,LIQ,start,end)
+                          print('LIQ_BACKFILL',tick,version,start,end,'raw',len(more))
+                          for x in more:
+                              ts=x.get('topics',[])
+                              if len(ts)>=3 and signed_int24_topic(ts[1])==tick and int(ts[2],16)==version:
+                                  return x
+                          end=start-1
+              return None
+
+          def slash_at(block,tick,version,index):
+              logs=legacy_logs(FARM,SLASH,block,block)
+              for x in logs:
+                  w=words(x.get('data'))
+                  if len(w)<5: continue
+                  tv=w[2]&((1<<24)-1); tv=tv-(1<<24) if tv&(1<<23) else tv
+                  if tv==tick and w[3]==version and w[4]==index:
+                      return x,w
+              return None,None
+
+          samples=[
+              # (tick, storedVersion, index, slashBlock)
+              (73167,1,0,21827817),
+              (79755,2,0,22618625),
+          ]
+
+          for tick,ver,idx,sb in samples:
+              print('SAMPLE_BEGIN',tick,ver,idx,'slash',sb)
+              sx,sw=slash_at(sb,tick,ver,idx)
+              if sx:
+                  print('SLASH_EXACT','block',sb,'notifierRewards',sw[0],'ownerRewards',sw[1],
+                        'totalRewards',sw[0]+sw[1],'tx',sx.get('transactionHash'))
+              else:
+                  print('SLASH_NOT_FOUND')
+              lx=find_liq(tick,ver,sb)
+              if lx:
+                  lb=int(lx['blockNumber'],16)
+                  print('LIQ_EXACT','block',lb,'delayBlocks',sb-lb,'tx',lx.get('transactionHash'),
+                        'topicTick',signed_int24_topic(lx['topics'][1]),'topicVersion',int(lx['topics'][2],16))
+              else:
+                  print('LIQ_NOT_FOUND')
+              print('SAMPLE_END')
+          PY
+
+          echo '--- exact campaign reward schedule ---'
           LEN=$(cast call "$PROVIDER" 'rewardInfoLen(uint256)(uint256)' "$CAMPAIGN" --rpc-url "$LIVE_RPC" | awk '{print $1}')
           echo "REWARD_INFO_LEN=$LEN"
           for ((i=0; i<LEN; i++)); do
