@@ -1,0 +1,41 @@
+name: sUSDN USDN feed formula
+on:
+  push:
+    branches: [security/susdn-live-config]
+  workflow_dispatch:
+jobs:
+  formula:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Derive formula and timestamp source
+        env:
+          RPC_URL: https://ethereum-rpc.publicnode.com
+          FEED: '0xd5004C5D3017862839e83981b110f27EE7B36EAa'
+          PROTOCOL: '0x656cB8C6d154Aad29d8771384089be5B5141f01a'
+        shell: bash
+        run: |
+          set -euo pipefail
+          block=$(cast block-number --rpc-url "$RPC_URL")
+          blockts=$(cast block "$block" timestamp --rpc-url "$RPC_URL")
+          echo "FORMULA_BLOCK=$block FORMULA_BLOCK_TS=$blockts"
+          echo "FEED_DECIMALS=$(cast call "$FEED" 'DECIMALS()(uint8)' --rpc-url "$RPC_URL")"
+          echo "FEED_BASE_RATE=$(cast call "$FEED" 'baseRate()(uint256,uint256,uint256)' --rpc-url "$RPC_URL")"
+          Q=$(cast call "$FEED" 'QUOTE_CONVERSION_AGGREGATOR_ADDRESS()(address)' --rpc-url "$RPC_URL")
+          INV=$(cast call "$FEED" 'QUOTE_CONVERSION_AGGREGATOR_INVERTED()(bool)' --rpc-url "$RPC_URL")
+          echo "FEED_QUOTE_AGG=$Q"
+          echo "FEED_QUOTE_INVERTED=$INV"
+          echo "QUOTE_DECIMALS=$(cast call "$Q" 'decimals()(uint8)' --rpc-url "$RPC_URL")"
+          echo "QUOTE_DESCRIPTION=$(cast call "$Q" 'description()(string)' --rpc-url "$RPC_URL" 2>/dev/null || echo REVERT)"
+          echo "QUOTE_LATEST=$(cast call "$Q" 'latestRoundData()(uint80,int256,uint256,uint256,uint80)' --rpc-url "$RPC_URL")"
+          echo "FEED_LATEST=$(cast call "$FEED" 'latestRoundData()(uint80,int256,uint256,uint256,uint80)' --rpc-url "$RPC_URL")"
+          LP=$(cast call "$PROTOCOL" 'getLastPrice()(uint128)' --rpc-url "$RPC_URL" | awk '{print $1}')
+          LUT=$(cast call "$PROTOCOL" 'getLastUpdateTimestamp()(uint128)' --rpc-url "$RPC_URL" | awk '{print $1}')
+          echo "PROTOCOL_LAST_PRICE=$LP"
+          echo "PROTOCOL_LAST_UPDATE=$LUT"
+          echo "PROTOCOL_USDN_PRICE_LAST=$(cast call "$PROTOCOL" 'usdnPrice(uint128)(uint256)' "$LP" --rpc-url "$RPC_URL" 2>/dev/null || echo REVERT)"
+          echo "PROTOCOL_USDN_PRICE_LAST_TS=$(cast call "$PROTOCOL" 'usdnPrice(uint128,uint128)(uint256)' "$LP" "$LUT" --rpc-url "$RPC_URL" 2>/dev/null || echo REVERT)"
+          echo "PROTOCOL_USDN_PRICE_NOW=$(cast call "$PROTOCOL" 'usdnPrice(uint128,uint128)(uint256)' "$LP" "$blockts" --rpc-url "$RPC_URL" 2>/dev/null || echo REVERT)"
