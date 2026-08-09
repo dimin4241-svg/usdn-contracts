@@ -79,3 +79,5 @@ jobs:
           c "$SUSDE" 'balanceOf(address)(uint256)' "$VAULT"
           c "$USDN" 'balanceOf(address)(uint256)' "$VAULT"
           c "$USDNR" 'balanceOf(address)(uint256)' "$VAULT"
+
+          echo 'probe_complete=1'
