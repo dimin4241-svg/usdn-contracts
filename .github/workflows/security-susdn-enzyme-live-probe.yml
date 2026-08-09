@@ -14,84 +14,58 @@ jobs:
     env:
       RPC_URL: "https://ethereum-rpc.publicnode.com"
       SUSDN: "0xF67e2dC041b8A3c39d066037d29f500757b1e886"
-      OLD_ACCESSOR: "0x0b1b0323f61ADAa27664cF1dA76a1ADAD026e7DC"
       USDNR: "0x82957d600963Ae0C529c3819Ac7C349c4D49269B"
       USDN: "0xde17a000BA631c5d7c2Bd9FB692EFeA52D90DEE2"
+      SUSDE: "0x9D39A5DE30e57443BfF2A8307A4256c8797A3497"
+      USDT: "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+      VALUE_INTERPRETER: "0xD7B0610dB501b15Bfb9B7DDad8b3869de262a327"
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
-      - name: Probe sUSDN and Enzyme configuration
+      - name: Probe USDnr valuation route
         shell: bash
         run: |
           set -u
-          CURRENT_ACCESSOR=$(cast call "$SUSDN" 'getAccessor()(address)' --rpc-url "$RPC_URL")
-          echo "CURRENT_ACCESSOR=$CURRENT_ACCESSOR"
-          echo "OLD_ACCESSOR=$OLD_ACCESSOR"
+          ACCESSOR=$(cast call "$SUSDN" 'getAccessor()(address)' --rpc-url "$RPC_URL")
+          echo "ACCESSOR=$ACCESSOR"
+          echo -n 'GAV='; cast call "$ACCESSOR" 'calcGav()(uint256)' --rpc-url "$RPC_URL"
+          echo -n 'GROSS_SHARE_VALUE='; cast call "$ACCESSOR" 'calcGrossShareValue()(uint256)' --rpc-url "$RPC_URL"
+          echo -n 'SUSDN_TOTAL_SUPPLY='; cast call "$SUSDN" 'totalSupply()(uint256)' --rpc-url "$RPC_URL"
+          echo -n 'USDNR_IN_SUSDN='; cast call "$USDNR" 'balanceOf(address)(uint256)' "$SUSDN" --rpc-url "$RPC_URL"
 
-          echo '=== BASIC VAULT ==='
-          for sig in \
-            'name()(string)' \
-            'symbol()(string)' \
-            'decimals()(uint8)' \
-            'totalSupply()(uint256)' \
-            'getAccessor()(address)' \
-            'getCreator()(address)' \
-            'getOwner()(address)' \
-            'getNominatedOwner()(address)' \
-            'getVaultLib()(address)' \
-            'getTrackedAssets()(address[])' \
-            'getActiveExternalPositions()(address[])'; do
-              echo "VAULT_CALL $sig"
-              cast call "$SUSDN" "$sig" --rpc-url "$RPC_URL" || true
+          echo '=== VALUE INTERPRETER CLASSIFICATION ==='
+          for token in "$USDNR" "$USDN" "$SUSDE" "$USDT"; do
+            echo "TOKEN=$token"
+            echo -n ' supported='; cast call "$VALUE_INTERPRETER" 'isSupportedAsset(address)(bool)' "$token" --rpc-url "$RPC_URL" || true
+            echo -n ' primitive='; cast call "$VALUE_INTERPRETER" 'isSupportedPrimitiveAsset(address)(bool)' "$token" --rpc-url "$RPC_URL" || true
+            echo -n ' derivative='; cast call "$VALUE_INTERPRETER" 'isSupportedDerivativeAsset(address)(bool)' "$token" --rpc-url "$RPC_URL" || true
+            echo -n ' aggregator='; cast call "$VALUE_INTERPRETER" 'getAggregatorForPrimitive(address)(address)' "$token" --rpc-url "$RPC_URL" || true
+            echo -n ' rateAsset='; cast call "$VALUE_INTERPRETER" 'getRateAssetForPrimitive(address)(uint8)' "$token" --rpc-url "$RPC_URL" || true
+            echo -n ' unit='; cast call "$VALUE_INTERPRETER" 'getUnitForPrimitive(address)(uint256)' "$token" --rpc-url "$RPC_URL" || true
+            echo -n ' derivativeFeed='; cast call "$VALUE_INTERPRETER" 'getPriceFeedForDerivative(address)(address)' "$token" --rpc-url "$RPC_URL" || true
           done
 
-          probe_accessor() {
-            local label="$1"
-            local accessor="$2"
-            echo "=== ${label} ACCESSOR $accessor ==="
-            for sig in \
-              'getVaultProxy()(address)' \
-              'getDenominationAsset()(address)' \
-              'getSharesActionTimelock()(uint256)' \
-              'getFundDeployer()(address)' \
-              'calcGav()(uint256)' \
-              'calcGrossShareValue()(uint256)' \
-              'getFeeManager()(address)' \
-              'getPolicyManager()(address)' \
-              'getIntegrationManager()(address)' \
-              'getValueInterpreter()(address)'; do
-                echo "ACCESSOR_CALL $sig"
-                cast call "$accessor" "$sig" --rpc-url "$RPC_URL" || true
-            done
-          }
-          probe_accessor CURRENT "$CURRENT_ACCESSOR"
-          probe_accessor OLD "$OLD_ACCESSOR"
+          echo '=== CANONICAL VALUES, 1 TOKEN ==='
+          echo -n 'USDnr_to_sUSDe='; cast call "$VALUE_INTERPRETER" 'calcCanonicalAssetValue(address,uint256,address)(uint256)' "$USDNR" 1000000000000000000 "$SUSDE" --rpc-url "$RPC_URL" || true
+          echo -n 'USDN_to_sUSDe='; cast call "$VALUE_INTERPRETER" 'calcCanonicalAssetValue(address,uint256,address)(uint256)' "$USDN" 1000000000000000000 "$SUSDE" --rpc-url "$RPC_URL" || true
+          echo -n 'USDnr_to_USDT='; cast call "$VALUE_INTERPRETER" 'calcCanonicalAssetValue(address,uint256,address)(uint256)' "$USDNR" 1000000000000000000 "$USDT" --rpc-url "$RPC_URL" || true
+          echo -n 'USDN_to_USDT='; cast call "$VALUE_INTERPRETER" 'calcCanonicalAssetValue(address,uint256,address)(uint256)' "$USDN" 1000000000000000000 "$USDT" --rpc-url "$RPC_URL" || true
 
-          echo '=== TRACKED ASSET BALANCES ==='
-          TRACKED=$(cast call "$SUSDN" 'getTrackedAssets()(address[])' --rpc-url "$RPC_URL")
-          echo "TRACKED_RAW=$TRACKED"
-          echo "$TRACKED" | grep -oE '0x[0-9a-fA-F]{40}' | while read -r token; do
-            echo "ASSET=$token"
-            echo -n '  symbol='; cast call "$token" 'symbol()(string)' --rpc-url "$RPC_URL" 2>/dev/null || echo '?'
-            echo -n '  decimals='; cast call "$token" 'decimals()(uint8)' --rpc-url "$RPC_URL" 2>/dev/null || echo '?'
-            echo -n '  vaultBalance='; cast call "$token" 'balanceOf(address)(uint256)' "$SUSDN" --rpc-url "$RPC_URL" 2>/dev/null || echo '?'
-          done
+          FEED=$(cast call "$VALUE_INTERPRETER" 'getPriceFeedForDerivative(address)(address)' "$USDNR" --rpc-url "$RPC_URL" 2>/dev/null || true)
+          echo "USDNR_DERIVATIVE_FEED=$FEED"
+          if [[ "$FEED" =~ ^0x[0-9a-fA-F]{40}$ ]] && [[ "${FEED,,}" != "0x0000000000000000000000000000000000000000" ]]; then
+            echo '=== DERIVATIVE FEED ==='
+            echo -n 'calcUnderlyingValues_1USDnr='; cast call "$FEED" 'calcUnderlyingValues(address,uint256)(address[],uint256[])' "$USDNR" 1000000000000000000 --rpc-url "$RPC_URL" || true
+            echo -n 'isSupportedAsset='; cast call "$FEED" 'isSupportedAsset(address)(bool)' "$USDNR" --rpc-url "$RPC_URL" || true
+            echo -n 'owner='; cast call "$FEED" 'getOwner()(address)' --rpc-url "$RPC_URL" || cast call "$FEED" 'owner()(address)' --rpc-url "$RPC_URL" || true
+          fi
 
-          echo '=== USDNR BACKING ==='
-          for sig in \
-            'name()(string)' \
-            'symbol()(string)' \
-            'totalSupply()(uint256)' \
-            'USDN()(address)' \
-            'getYieldRecipient()(address)' \
-            'owner()(address)'; do
-              echo "USDNR_CALL $sig"
-              cast call "$USDNR" "$sig" --rpc-url "$RPC_URL" || true
-          done
+          echo '=== USDNR REAL REDEMPTION/BACKING ==='
+          echo -n 'USDNR_TOTAL_SUPPLY='; cast call "$USDNR" 'totalSupply()(uint256)' --rpc-url "$RPC_URL"
           echo -n 'USDN_DIVISOR='; cast call "$USDN" 'divisor()(uint256)' --rpc-url "$RPC_URL"
-          echo -n 'USDN_TOKEN_BALANCE_OF_USDNR='; cast call "$USDN" 'balanceOf(address)(uint256)' "$USDNR" --rpc-url "$RPC_URL"
-          echo -n 'USDN_SHARES_OF_USDNR='; cast call "$USDN" 'sharesOf(address)(uint256)' "$USDNR" --rpc-url "$RPC_URL"
-          echo -n 'USDN_TOKEN_BALANCE_OF_SUSDN='; cast call "$USDN" 'balanceOf(address)(uint256)' "$SUSDN" --rpc-url "$RPC_URL"
-          echo -n 'USDNR_BALANCE_OF_SUSDN='; cast call "$USDNR" 'balanceOf(address)(uint256)' "$SUSDN" --rpc-url "$RPC_URL"
+          echo -n 'USDN_BALANCE_IN_USDNR='; cast call "$USDN" 'balanceOf(address)(uint256)' "$USDNR" --rpc-url "$RPC_URL"
+          echo -n 'USDN_SHARES_IN_USDNR='; cast call "$USDN" 'sharesOf(address)(uint256)' "$USDNR" --rpc-url "$RPC_URL"
+          echo -n 'SUSDE_ASSETS_PER_1e18_SHARES='; cast call "$SUSDE" 'convertToAssets(uint256)(uint256)' 1000000000000000000 --rpc-url "$RPC_URL" || true
+          echo -n 'SUSDE_PREVIEW_REDEEM_1e18='; cast call "$SUSDE" 'previewRedeem(uint256)(uint256)' 1000000000000000000 --rpc-url "$RPC_URL" || true
