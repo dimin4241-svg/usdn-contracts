@@ -1,0 +1,41 @@
+name: USDN fee collector live read-only
+on:
+  workflow_dispatch:
+  push:
+    branches: [security/susdn-live-config]
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Read fee collector state and callback support
+        shell: bash
+        env:
+          RPC: https://ethereum-rpc.publicnode.com
+          PROTOCOL: '0x656cB8C6d154Aad29d8771384089be5B5141f01a'
+        run: |
+          set -euo pipefail
+          COLLECTOR=$(cast call "$PROTOCOL" 'getFeeCollector()(address)' --rpc-url "$RPC")
+          ASSET=$(cast call "$PROTOCOL" 'getAsset()(address)' --rpc-url "$RPC")
+          echo "collector=$COLLECTOR"
+          echo "asset=$ASSET"
+          echo "feeThreshold=$(cast call "$PROTOCOL" 'getFeeThreshold()(uint256)' --rpc-url "$RPC")"
+          echo "pendingProtocolFee=$(cast call "$PROTOCOL" 'getPendingProtocolFee()(uint256)' --rpc-url "$RPC")"
+          echo "collectorAssetBalance=$(cast call "$ASSET" 'balanceOf(address)(uint256)' "$COLLECTOR" --rpc-url "$RPC")"
+          echo "collectorCodeSize=$(cast codesize "$COLLECTOR" --rpc-url "$RPC")"
+          echo "collectorCodeHash=$(cast codehash "$COLLECTOR" --rpc-url "$RPC")"
+          CALLBACK_ID=$(cast sig 'feeCollectorCallback(uint256)')
+          # IERC165 interface id for a single-function extension is that function selector XOR IERC165 inherited funcs are not part of child interface ID.
+          echo "feeCollectorCallbackSelector=$CALLBACK_ID"
+          printf 'supportsIERC165='; cast call "$COLLECTOR" 'supportsInterface(bytes4)(bool)' 0x01ffc9a7 --rpc-url "$RPC" 2>/dev/null || echo CALL_FAILED
+          printf 'supportsFeeCollectorCallbackSelector='; cast call "$COLLECTOR" 'supportsInterface(bytes4)(bool)' "$CALLBACK_ID" --rpc-url "$RPC" 2>/dev/null || echo CALL_FAILED
+          printf 'owner='; cast call "$COLLECTOR" 'owner()(address)' --rpc-url "$RPC" 2>/dev/null || echo CALL_FAILED
+          printf 'thresholdWouldDistribute='; python3 - <<'PY'
+          import subprocess,os
+          rpc=os.environ['RPC']; p=os.environ['PROTOCOL']
+          a=int(subprocess.check_output(['cast','call',p,'getPendingProtocolFee()(uint256)','--rpc-url',rpc],text=True).split()[0])
+          t=int(subprocess.check_output(['cast','call',p,'getFeeThreshold()(uint256)','--rpc-url',rpc],text=True).split()[0])
+          print(a>=t, 'pending=',a,'threshold=',t)
+          PY
