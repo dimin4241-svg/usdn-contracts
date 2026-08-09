@@ -1,0 +1,58 @@
+name: USDN Dip deployed source inspect
+
+on:
+  push:
+    branches:
+      - security/usdn-dip-rewards-deep-scan
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch verified deployed source from Blockscout
+        env:
+          ADDRESS: '0xaebcc85a5594e687f6b302405e6e92d616826e03'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, urllib.request, os, re
+          addr=os.environ['ADDRESS']
+          url=f'https://eth.blockscout.com/api/?module=contract&action=getsourcecode&address={addr}'
+          req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0 USDN-security-readonly'})
+          with urllib.request.urlopen(req,timeout=60) as r:
+              out=json.load(r)
+          print('status',out.get('status'),'message',out.get('message'))
+          item=out['result'][0]
+          print('ContractName',item.get('ContractName'))
+          print('CompilerVersion',item.get('CompilerVersion'))
+          raw=item['SourceCode']
+          # Blockscout/Etherscan standard-json sometimes wraps JSON in an extra pair of braces.
+          txt=raw
+          if raw.startswith('{{') and raw.endswith('}}'):
+              txt=raw[1:-1]
+          try:
+              obj=json.loads(txt)
+              sources=obj.get('sources',{})
+              print('sourceFileCount',len(sources))
+              matched=[]
+              for path,entry in sources.items():
+                  content=entry.get('content','') if isinstance(entry,dict) else ''
+                  if 'contract DipAccumulator' in content or 'abstract contract DipAccumulator' in content:
+                      matched.append((path,content))
+              if not matched:
+                  for path,entry in sources.items():
+                      content=entry.get('content','') if isinstance(entry,dict) else ''
+                      if 'initiateDeposit' in content and 'validateDeposit' in content:
+                          matched.append((path,content))
+              print('matchedFiles',[p for p,_ in matched])
+              for path,content in matched:
+                  print('===== SOURCE',path,'=====')
+                  print(content)
+          except Exception as e:
+              print('JSON_PARSE_FAILED',repr(e))
+              print(raw)
+          PY
