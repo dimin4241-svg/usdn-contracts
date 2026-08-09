@@ -1,4 +1,4 @@
-name: Router allow-revert close history
+name: Router targeted production command scan
 
 on:
   push:
@@ -10,37 +10,137 @@ jobs:
   inspect:
     runs-on: ubuntu-latest
     steps:
-      - name: Read public Blockscout transaction feed
+      - name: Decode public Router transaction feed
         env:
           ROUTER: "0x49f66B1616865b2a59caECb8352bbf2AC80983e1"
         run: |
           python - <<'PY'
           import json, os, urllib.request, urllib.parse
 
-          router=os.environ['ROUTER']
-          url=f'https://eth.blockscout.com/api/v2/addresses/{router}/transactions?filter=to'
-          seen=0
-          pages=0
-          while url and pages < 200:
+          ROUTER=os.environ['ROUTER'].lower()
+          EXECUTE2='24856bc3'   # execute(bytes,bytes[])
+          EXECUTE3='3593564c'   # execute(bytes,bytes[],uint256)
+          MASK=0x3f
+          ALLOW=0x80
+          SWEEP=0x04
+          INITIATE_CLOSE=0x23
+          VALIDATE_PENDING=0x2a
+          NAMES={
+              0x04:'SWEEP',0x05:'TRANSFER',0x13:'WRAP_ETH',0x14:'UNWRAP_WETH',
+              0x20:'INITIATE_DEPOSIT',0x21:'INITIATE_WITHDRAWAL',0x22:'INITIATE_OPEN',
+              0x23:'INITIATE_CLOSE',0x24:'VALIDATE_DEPOSIT',0x25:'VALIDATE_WITHDRAWAL',
+              0x26:'VALIDATE_OPEN',0x27:'VALIDATE_CLOSE',0x28:'LIQUIDATE',
+              0x29:'TRANSFER_POSITION_OWNERSHIP',0x2a:'VALIDATE_PENDING',
+              0x2b:'REBALANCER_INITIATE_DEPOSIT',0x2c:'REBALANCER_INITIATE_CLOSE',
+              0x30:'WRAP_USDN',0x31:'UNWRAP_WUSDN',0x32:'WRAP_STETH',0x33:'UNWRAP_WSTETH',
+              0x34:'USDN_TRANSFER_SHARES_FROM',0x38:'SMARDEX_SWAP_EXACT_IN',
+              0x39:'SMARDEX_SWAP_EXACT_OUT',0x3a:'SMARDEX_ADD_LIQUIDITY',0x3b:'SMARDEX_REMOVE_LIQUIDITY'
+          }
+
+          def u256(buf, off):
+              if off < 0 or off+32 > len(buf): raise ValueError('word out of bounds')
+              return int.from_bytes(buf[off:off+32], 'big')
+
+          def dyn_bytes(buf, off):
+              n=u256(buf,off)
+              start=off+32
+              end=start+n
+              if end>len(buf): raise ValueError('bytes out of bounds')
+              return buf[start:end]
+
+          def bytes_array(buf, off):
+              n=u256(buf,off)
+              head=off+32
+              out=[]
+              # For a dynamic array of dynamic values, element offsets are relative
+              # to the start of the array payload after the length word.
+              for i in range(n):
+                  rel=u256(buf,head+32*i)
+                  elem=head+rel
+                  out.append(dyn_bytes(buf,elem))
+              return out
+
+          def decode_execute(raw):
+              if not raw or not raw.startswith('0x') or len(raw)<10: return None
+              selector=raw[2:10].lower()
+              if selector not in (EXECUTE2,EXECUTE3): return None
+              body=bytes.fromhex(raw[10:])
+              commands_off=u256(body,0)
+              inputs_off=u256(body,32)
+              commands=dyn_bytes(body,commands_off)
+              inputs=bytes_array(body,inputs_off)
+              return selector,commands,inputs
+
+          def addr_word(inp, word_index):
+              off=32*word_index
+              if len(inp)<off+32: return None
+              return '0x'+inp[off+12:off+32].hex()
+
+          def sweep_info(commands, inputs, start_index):
+              rows=[]
+              for i in range(start_index+1, min(len(commands),len(inputs))):
+                  typ=commands[i]&MASK
+                  if typ!=SWEEP: continue
+                  token=addr_word(inputs[i],0)
+                  recipient=addr_word(inputs[i],1)
+                  # SmarDex/Uniswap Router uses address(0) as the ETH sentinel in Sweep.
+                  rows.append({'index':i,'token':token,'recipient':recipient,'isEth': token=='0x'+'00'*20})
+              return rows
+
+          url=f'https://eth.blockscout.com/api/v2/addresses/{ROUTER}/transactions?filter=to'
+          pages=seen=execute_count=0
+          allow_close=[]
+          validate_pending=[]
+          decode_errors=0
+
+          while url and pages<250:
               req=urllib.request.Request(url,headers={'User-Agent':'USDN-router-readonly-audit'})
               with urllib.request.urlopen(req,timeout=60) as r:
                   data=json.loads(r.read())
-              pages += 1
-              items=data.get('items',[])
-              for tx in items:
-                  seen += 1
+              pages+=1
+              for tx in data.get('items',[]):
+                  seen+=1
                   raw=(tx.get('raw_input') or tx.get('input') or '').lower()
-                  method=tx.get('method')
-                  value=int(tx.get('value') or 0)
-                  # Print only execute calls carrying ETH; command bytes are decoded later from calldata.
-                  if value > 0 and method in ('execute','0x24856bc3','0x3593564c'):
-                      print('VALUE_EXECUTE',json.dumps({
-                          'hash':tx.get('hash'),'block':tx.get('block'),'timestamp':tx.get('timestamp'),
-                          'value':value,'status':tx.get('status'),'method':method,'raw_input':raw
-                      },sort_keys=True))
+                  try:
+                      decoded=decode_execute(raw)
+                  except Exception as e:
+                      decode_errors+=1
+                      continue
+                  if not decoded: continue
+                  execute_count+=1
+                  selector,commands,inputs=decoded
+                  typed=[b&MASK for b in commands]
+                  desc=[(('ALLOW|' if b&ALLOW else '')+NAMES.get(b&MASK,hex(b&MASK))) for b in commands]
+                  common={
+                      'hash':tx.get('hash'),'block':tx.get('block'),'timestamp':tx.get('timestamp'),
+                      'status':tx.get('status'),'valueWei':int(tx.get('value') or 0),
+                      'selector':'0x'+selector,'commandsHex':'0x'+commands.hex(),'commands':desc,
+                  }
+                  for i,b in enumerate(commands):
+                      typ=b&MASK
+                      if typ==INITIATE_CLOSE and (b&ALLOW):
+                          row=dict(common)
+                          row['commandIndex']=i
+                          row['laterSweeps']=sweep_info(commands,inputs,i)
+                          row['hasLaterEthSweep']=any(x['isEth'] for x in row['laterSweeps'])
+                          allow_close.append(row)
+                      if typ==VALIDATE_PENDING:
+                          row=dict(common)
+                          row['commandIndex']=i
+                          row['laterSweeps']=sweep_info(commands,inputs,i)
+                          row['hasLaterEthSweep']=any(x['isEth'] for x in row['laterSweeps'])
+                          validate_pending.append(row)
               nxt=data.get('next_page_params')
-              if not nxt:
-                  break
-              url=f'https://eth.blockscout.com/api/v2/addresses/{router}/transactions?'+urllib.parse.urlencode({'filter':'to',**nxt})
-          print('SCAN_SUMMARY',json.dumps({'pages':pages,'transactionsSeen':seen}))
+              if not nxt: break
+              url=f'https://eth.blockscout.com/api/v2/addresses/{ROUTER}/transactions?'+urllib.parse.urlencode({'filter':'to',**nxt})
+
+          print('TARGETED_SCAN_SUMMARY',json.dumps({
+              'pages':pages,'transactionsSeen':seen,'executeCalls':execute_count,
+              'decodeErrors':decode_errors,'allowRevertCloseMatches':len(allow_close),
+              'validatePendingMatches':len(validate_pending)
+          },sort_keys=True))
+          for row in allow_close:
+              print('ALLOW_REVERT_CLOSE',json.dumps(row,sort_keys=True))
+          for row in validate_pending:
+              print('VALIDATE_PENDING_USAGE',json.dumps(row,sort_keys=True))
           PY
