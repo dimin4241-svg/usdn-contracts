@@ -1,0 +1,47 @@
+name: USDN Router BailSec dedup
+
+on:
+  push:
+    branches:
+      - security/usdn-router-softfail-sweep
+
+permissions:
+  contents: read
+
+jobs:
+  dedup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract official BailSec Router report
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq poppler-utils
+          git clone --depth=1 https://github.com/bailsec/BailSec.git /tmp/bailsec
+          PDF='/tmp/bailsec/Bailsec - Smardex - Router - Final Report.pdf'
+          pdfinfo "$PDF" | sed -n '1,30p'
+          pdftotext -layout "$PDF" /tmp/router-audit.txt
+          echo '=== TABLE OF CONTENTS / ISSUE TITLES ==='
+          grep -nEi 'Issue[_ ]?[0-9]+|Critical|High|Medium|Low|Informational|finding|vulnerab' /tmp/router-audit.txt | head -n 250 || true
+          echo '=== ROOT-CAUSE TERM MATCHES ==='
+          for term in 'CONTRACT_BALANCE' 'contract balance' 'pre-existing' 'preexisting' 'preload' 'donat' 'dust' 'sweep' 'grief' 'front-run' 'frontrun' 'SDEX' 'payment' 'callback' 'balanceOf(address(this))' 'balance of the router' 'stuck' 'leftover' 'left over'; do
+            echo "--- $term ---"
+            grep -niF "$term" /tmp/router-audit.txt | head -n 80 || true
+          done
+          echo '=== CONTEXT AROUND BALANCE / SWEEP / SDEX MATCHES ==='
+          python3 - <<'PY'
+          import re
+          lines=open('/tmp/router-audit.txt',errors='replace').read().splitlines()
+          pats=[r'contract.balance',r'pre.?exist',r'preload',r'donat',r'dust',r'sweep',r'grief',r'front.?run',r'sdex',r'payment',r'callback',r'left.?over',r'stuck']
+          hits=[]
+          for i,l in enumerate(lines):
+              if any(re.search(p,l,re.I) for p in pats): hits.append(i)
+          shown=[]
+          for i in hits:
+              if any(abs(i-j)<8 for j in shown): continue
+              shown.append(i)
+              print(f'\n### around text line {i+1} ###')
+              for j in range(max(0,i-6),min(len(lines),i+13)):
+                  print(f'{j+1:05d}: {lines[j]}')
+          PY
