@@ -1,0 +1,34 @@
+name: wstETH skew live parameters
+on:
+  workflow_dispatch:
+  push:
+    branches: [security/susdn-live-config]
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - shell: bash
+        env:
+          RPC: https://ethereum-rpc.publicnode.com
+          PROTOCOL: '0x656cB8C6d154Aad29d8771384089be5B5141f01a'
+        run: |
+          set -euo pipefail
+          ASSET=$(cast call "$PROTOCOL" 'getAsset()(address)' --rpc-url "$RPC")
+          ORACLE=$(cast call "$PROTOCOL" 'getOracleMiddleware()(address)' --rpc-url "$RPC")
+          echo "asset=$ASSET"
+          echo "oracle=$ORACLE"
+          echo "maxLeverage=$(cast call "$PROTOCOL" 'getMaxLeverage()(uint256)' --rpc-url "$RPC")"
+          echo "minLeverage=$(cast call "$PROTOCOL" 'getMinLeverage()(uint256)' --rpc-url "$RPC")"
+          echo "positionFeeBps=$(cast call "$PROTOCOL" 'getPositionFeeBps()(uint16)' --rpc-url "$RPC")"
+          echo "lowLatencyValidatorDeadline=$(cast call "$PROTOCOL" 'getLowLatencyValidatorDeadline()(uint128)' --rpc-url "$RPC")"
+          echo "onChainValidatorDeadline=$(cast call "$PROTOCOL" 'getOnChainValidatorDeadline()(uint128)' --rpc-url "$RPC")"
+          echo "balanceVault=$(cast call "$PROTOCOL" 'getBalanceVault()(uint256)' --rpc-url "$RPC")"
+          echo "balanceLong=$(cast call "$PROTOCOL" 'getBalanceLong()(uint256)' --rpc-url "$RPC")"
+          echo "totalExpo=$(cast call "$PROTOCOL" 'getTotalExpo()(uint256)' --rpc-url "$RPC")"
+          echo "protocolAssetBalance=$(cast call "$ASSET" 'balanceOf(address)(uint256)' "$PROTOCOL" --rpc-url "$RPC")"
+          echo "stEthPerToken=$(cast call "$ASSET" 'stEthPerToken()(uint256)' --rpc-url "$RPC")"
+          echo "validationDelay=$(cast call "$ORACLE" 'getValidationDelay()(uint256)' --rpc-url "$RPC")"
+          echo "lowLatencyDelay=$(cast call "$ORACLE" 'getLowLatencyDelay()(uint16)' --rpc-url "$RPC")"
