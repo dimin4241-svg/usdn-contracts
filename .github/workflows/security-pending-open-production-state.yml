@@ -1,0 +1,75 @@
+name: Pending-open production state
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/security-pending-open-production-state.yml'
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Capture live parameters
+        env:
+          RPC_URL: https://ethereum-rpc.publicnode.com
+          PROTOCOL: '0x656cB8C6d154Aad29d8771384089be5B5141f01a'
+          SUSDN: '0xF67e2dC041b8A3c39d066037d29f500757b1e886'
+          DEPOSIT_POLICY: '0xA66BAAa0cC94D30EC8c2740c9FC2d59F31C50Ee1'
+        run: |
+          set -euo pipefail
+          echo "BLOCK=$(cast block-number --rpc-url "$RPC_URL")"
+          for sig in \
+            'getLastPrice()(uint128)' \
+            'getLastUpdateTimestamp()(uint128)' \
+            'getBalanceVault()(uint256)' \
+            'getBalanceLong()(uint256)' \
+            'getTotalExpo()(uint256)' \
+            'getPendingBalanceVault()(int256)' \
+            'getMinLongPosition()(uint256)' \
+            'getMinLeverage()(uint256)' \
+            'getMaxLeverage()(uint256)' \
+            'getOpenExpoImbalanceLimitBps()(int256)' \
+            'getCloseExpoImbalanceLimitBps()(int256)' \
+            'getDepositExpoImbalanceLimitBps()(int256)' \
+            'getWithdrawalExpoImbalanceLimitBps()(int256)' \
+            'getPositionFeeBps()(uint16)' \
+            'getVaultFeeBps()(uint16)' \
+            'getSafetyMarginBps()(uint256)' \
+            'getLiquidationPenalty()(uint24)' \
+            'getLiquidationIteration()(uint16)' \
+            'getLowLatencyValidatorDeadline()(uint128)' \
+            'getOnChainValidatorDeadline()(uint128)' \
+            'getSecurityDepositValue()(uint64)' \
+            'getUsdnRebaseThreshold()(uint256)' \
+            'getTargetUsdnPrice()(uint128)' \
+            'getUsdnRebaseThreshold()(uint256)' \
+            'getUsdn()(address)' \
+            'getOracleMiddleware()(address)'; do
+              echo "$sig => $(cast call "$PROTOCOL" "$sig" --rpc-url "$RPC_URL" 2>/dev/null || echo REVERT)"
+          done
+          USDN=$(cast call "$PROTOCOL" 'getUsdn()(address)' --rpc-url "$RPC_URL")
+          echo "USDN_TOTAL_SUPPLY=$(cast call "$USDN" 'totalSupply()(uint256)' --rpc-url "$RPC_URL")"
+          echo "USDN_TOTAL_SHARES=$(cast call "$USDN" 'totalShares()(uint256)' --rpc-url "$RPC_URL")"
+          echo "USDN_DIVISOR=$(cast call "$USDN" 'divisor()(uint256)' --rpc-url "$RPC_URL")"
+          MW=$(cast call "$PROTOCOL" 'getOracleMiddleware()(address)' --rpc-url "$RPC_URL")
+          echo "MIDDLEWARE=$MW"
+          echo "MW_VALIDATION_DELAY=$(cast call "$MW" 'getValidationDelay()(uint256)' --rpc-url "$RPC_URL")"
+          echo "MW_LOW_LATENCY_DELAY=$(cast call "$MW" 'getLowLatencyDelay()(uint16)' --rpc-url "$RPC_URL")"
+
+          ACCESSOR=$(cast call "$SUSDN" 'getAccessor()(address)' --rpc-url "$RPC_URL")
+          REGISTRY=$(cast call "$DEPOSIT_POLICY" 'getAddressListRegistry()(address)' --rpc-url "$RPC_URL")
+          LISTS=$(cast call "$DEPOSIT_POLICY" 'getListIdsForFund(address)(uint256[])' "$ACCESSOR" --rpc-url "$RPC_URL")
+          echo "SUSDN_ACCESSOR=$ACCESSOR"
+          echo "SUSDN_TOTAL_SUPPLY=$(cast call "$SUSDN" 'totalSupply()(uint256)' --rpc-url "$RPC_URL")"
+          echo "SUSDN_GAV=$(cast call "$ACCESSOR" 'calcGav()(uint256)' --rpc-url "$RPC_URL")"
+          echo "SUSDN_GROSS_SHARE_VALUE=$(cast call "$ACCESSOR" 'calcGrossShareValue()(uint256)' --rpc-url "$RPC_URL")"
+          echo "SUSDN_SHARES_ACTION_TIMELOCK=$(cast call "$ACCESSOR" 'getSharesActionTimelock()(uint256)' --rpc-url "$RPC_URL")"
+          echo "DEPOSIT_LIST_IDS=$LISTS"
+          echo "DEPOSIT_LIST_REGISTRY=$REGISTRY"
+          echo "$LISTS" | grep -oE '[0-9]+' | while read -r id; do
+            echo "DEPOSIT_LIST=$id OWNER=$(cast call "$REGISTRY" 'getListOwner(uint256)(address)' "$id" --rpc-url "$RPC_URL") UPDATE_TYPE=$(cast call "$REGISTRY" 'getListUpdateType(uint256)(uint8)' "$id" --rpc-url "$RPC_URL")"
+          done
