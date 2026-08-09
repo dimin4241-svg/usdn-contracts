@@ -1,19 +1,20 @@
 name: sUSDN Enzyme live configuration probe
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
   push:
-    branches: [security/usdn-susdn-enzyme]
+    branches:
+      - security/usdn-susdn-enzyme
     paths:
-      - '.github/workflows/security-susdn-enzyme-live-probe.yml'
+      - .github/workflows/security-susdn-enzyme-live-probe.yml
 
 jobs:
   probe:
     runs-on: ubuntu-latest
     env:
-      RPC_URL: https://ethereum-rpc.publicnode.com
-      SUSDN: 0xF67e2dC041b8A3c39d066037d29f500757b1e886
-      ACCESSOR: 0x0b1b0323f61ADAa27664cF1dA76a1ADAD026e7DC
+      RPC_URL: "https://ethereum-rpc.publicnode.com"
+      SUSDN: "0xF67e2dC041b8A3c39d066037d29f500757b1e886"
+      ACCESSOR: "0x0b1b0323f61ADAa27664cF1dA76a1ADAD026e7DC"
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
@@ -22,7 +23,7 @@ jobs:
       - name: Probe sUSDN and Enzyme configuration
         shell: bash
         run: |
-          set -uo pipefail
+          set -u
           echo '=== BASIC VAULT ==='
           for sig in \
             'name()(string)' \
@@ -44,7 +45,7 @@ jobs:
           echo '=== EIP1967 IMPLEMENTATION ==='
           cast storage "$SUSDN" 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc --rpc-url "$RPC_URL" || true
 
-          echo '=== ACCESSOR / COMPTROLLER ==='
+          echo '=== ACCESSOR / COMPTROLLER ZERO-ARG ==='
           for sig in \
             'getVaultProxy()(address)' \
             'getDenominationAsset()(address)' \
@@ -52,12 +53,12 @@ jobs:
             'getFundDeployer()(address)' \
             'calcGav()(uint256)' \
             'calcGrossShareValue()(uint256)' \
-            'getAutoProtocolFeeShares()(uint256)' \
-            'getLastSharesBoughtTimestamp(address)(uint256)'; do
+            'getAutoProtocolFeeShares()(uint256)'; do
               echo "CALL $sig"
-              cast call "$ACCESSOR" "$sig" 0x0000000000000000000000000000000000000001 --rpc-url "$RPC_URL" 2>/dev/null || \
               cast call "$ACCESSOR" "$sig" --rpc-url "$RPC_URL" || true
           done
+          echo 'CALL getLastSharesBoughtTimestamp(address)(uint256)'
+          cast call "$ACCESSOR" 'getLastSharesBoughtTimestamp(address)(uint256)' 0x0000000000000000000000000000000000000001 --rpc-url "$RPC_URL" || true
 
           echo '=== TRACKED ASSET BALANCES ==='
           TRACKED=$(cast call "$SUSDN" 'getTrackedAssets()(address[])' --rpc-url "$RPC_URL" 2>/dev/null || true)
