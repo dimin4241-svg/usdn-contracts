@@ -1,4 +1,4 @@
-name: LongFarming live post-liquidation accrual
+name: LongFarming current reward campaign triggerability
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  measure:
+  current-state:
     runs-on: ubuntu-latest
     steps:
       - name: Install Foundry
@@ -15,99 +15,77 @@ jobs:
         with:
           version: nightly
 
-      - name: Historical read-only calls
+      - name: Read current campaign state
         env:
           LONG_FARMING: "0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27"
-          LIQ_BLOCK: "21756069"
-          PRE_SLASH_BLOCK: "21758974"
-          TICK: "82000"
-          VERSION: "0"
-          INDEX: "0"
-          SLASH_OWNER_REWARDS_WEI: "55350465282065918760293"
+          FARMING_RANGE: "0x7d85C0905a6E1Ab5837a0b57cD94A419d3a77523"
+          CAMPAIGN_ID: "20"
         run: |
           python - <<'PY'
-          import os, subprocess, json
+          import json, os, subprocess
           from decimal import Decimal, getcontext
           getcontext().prec = 80
 
           long = os.environ['LONG_FARMING']
-          liq = int(os.environ['LIQ_BLOCK'])
-          pre = int(os.environ['PRE_SLASH_BLOCK'])
-          tick = os.environ['TICK']
-          version = os.environ['VERSION']
-          index = os.environ['INDEX']
-          slash_owner_rewards = int(os.environ['SLASH_OWNER_REWARDS_WEI'])
-
+          farming = os.environ['FARMING_RANGE']
+          campaign = os.environ['CAMPAIGN_ID']
           rpcs = [
+              'https://ethereum-rpc.publicnode.com',
               'https://eth.drpc.org',
               'https://1rpc.io/eth',
-              'https://ethereum-rpc.publicnode.com',
               'https://eth.llamarpc.com',
               'https://rpc.flashbots.net',
               'https://cloudflare-eth.com',
           ]
 
-          def call(block, sig, *args):
-              errors = []
+          def rpc_cmd(args):
+              errors=[]
               for rpc in rpcs:
-                  try:
-                      cmd = ['cast','call','--rpc-url',rpc,'--block',str(block),long,sig,*map(str,args)]
-                      p = subprocess.run(cmd, text=True, capture_output=True, timeout=45)
-                  except subprocess.TimeoutExpired:
-                      errors.append({'rpc':rpc,'stderr':'timeout'})
-                      continue
-                  if p.returncode == 0:
-                      out = p.stdout.strip()
-                      print('CALL_OK', json.dumps({'rpc':rpc,'block':block,'sig':sig,'out':out}))
-                      return out, rpc
-                  errors.append({'rpc':rpc,'stderr':p.stderr.strip()[:240]})
+                  p=subprocess.run(args(rpc),text=True,capture_output=True,timeout=30)
+                  if p.returncode==0:
+                      return p.stdout.strip(),rpc
+                  errors.append({'rpc':rpc,'err':p.stderr.strip()[:200]})
               raise RuntimeError(json.dumps(errors))
 
-          def first_uint(text):
-              token = text.split()[0].strip()
-              return int(token, 16) if token.startswith('0x') else int(token)
+          def call(addr,sig,*args):
+              out,rpc=rpc_cmd(lambda r:['cast','call','--rpc-url',r,addr,sig,*map(str,args)])
+              print('CALL_OK',json.dumps({'rpc':rpc,'sig':sig,'out':out}))
+              return out
 
-          pending_sig = 'pendingRewards(int24,uint256,uint256)(uint256)'
-          total_sig = 'getTotalShares()(uint256)'
-          info_sig = 'getPositionInfo(int24,uint256,uint256)(address,int24,uint256,uint256,uint256,uint128)'
+          def uint(text):
+              t=text.split()[0]
+              return int(t,16) if t.startswith('0x') else int(t)
 
-          p_liq_raw, rpc_liq = call(liq, pending_sig, tick, version, index)
-          p_pre_raw, rpc_pre = call(pre, pending_sig, tick, version, index)
-          p_liq = first_uint(p_liq_raw)
-          p_pre = first_uint(p_pre_raw)
-          post_liq = p_pre - p_liq
+          latest_raw,rpc=rpc_cmd(lambda r:['cast','block-number','--rpc-url',r])
+          latest=uint(latest_raw)
+          end=uint(call(farming,'currentEndBlock(uint256)(uint256)',campaign))
+          rpb=uint(call(farming,'currentRewardPerBlock(uint256)(uint256)',campaign))
+          reward_len=uint(call(farming,'rewardInfoLen(uint256)(uint256)',campaign))
+          pending=uint(call(farming,'pendingReward(uint256,address)(uint256)',campaign,long))
+          positions=uint(call(long,'getPositionsCount()(uint256)'))
+          shares=uint(call(long,'getTotalShares()(uint256)'))
+          last_reward_block=uint(call(long,'getLastRewardBlock()(uint256)'))
 
-          ts_liq = first_uint(call(liq, total_sig)[0])
-          ts_pre = first_uint(call(pre, total_sig)[0])
-          info_liq = call(liq, info_sig, tick, version, index)[0]
-          info_lines = [line.split()[0] for line in info_liq.splitlines()]
-          owner = info_lines[0]
-          shares = int(info_lines[5])
+          last_schedule=None
+          if reward_len:
+              raw=call(farming,'campaignRewardInfo(uint256,uint256)(uint256,uint256)',campaign,reward_len-1)
+              parts=[line.split()[0] for line in raw.splitlines()]
+              last_schedule={'endBlock':int(parts[0]),'rewardPerBlock':int(parts[1])}
 
-          slash_block_extra = slash_owner_rewards - p_pre
-          result = {
-              'liquidationBlock': liq,
-              'preSlashBlock': pre,
-              'owner': owner,
-              'positionShares': shares,
-              'totalSharesAtLiquidation': ts_liq,
-              'totalSharesBeforeSlash': ts_pre,
-              'staleShareOfDenominatorPct': str(Decimal(shares) * 100 / Decimal(ts_liq)),
-              'pendingAtLiquidationWei': p_liq,
-              'pendingBeforeSlashWei': p_pre,
-              'conservativePostLiquidationAccrualWei': post_liq,
-              'pendingAtLiquidationSDEX': str(Decimal(p_liq) / Decimal(10**18)),
-              'pendingBeforeSlashSDEX': str(Decimal(p_pre) / Decimal(10**18)),
-              'conservativePostLiquidationAccrualSDEX': str(Decimal(post_liq) / Decimal(10**18)),
-              'slashOwnerRewardsSDEX': str(Decimal(slash_owner_rewards) / Decimal(10**18)),
-              'additionalRewardBookedInSlashBlockSDEX': str(Decimal(slash_block_extra) / Decimal(10**18)),
-              'postLiquidationPctOfSlashPayout': str(Decimal(post_liq) * 100 / Decimal(slash_owner_rewards)),
-              'rpcForLiquidationPending': rpc_liq,
-              'rpcForPreSlashPending': rpc_pre,
+          result={
+              'latestBlock':latest,
+              'currentEndBlock':end,
+              'currentRewardPerBlockWei':rpb,
+              'currentRewardPerBlockSDEX':str(Decimal(rpb)/Decimal(10**18)),
+              'rewardInfoLen':reward_len,
+              'lastSchedule':last_schedule,
+              'pendingRewardForLongFarmingWei':pending,
+              'pendingRewardForLongFarmingSDEX':str(Decimal(pending)/Decimal(10**18)),
+              'positionsCount':positions,
+              'totalShares':shares,
+              'longFarmingLastRewardBlock':last_reward_block,
+              'campaignCurrentlyEmitting': bool(rpb>0 and latest<=end),
+              'blocksUntilCurrentEnd': end-latest,
           }
-          print('LIVE_ACCRUAL_RESULT', json.dumps(result, sort_keys=True))
-
-          assert post_liq > 0
-          assert ts_liq == ts_pre
-          assert slash_owner_rewards > p_pre
+          print('CURRENT_TRIGGERABILITY_RESULT',json.dumps(result,sort_keys=True))
           PY
