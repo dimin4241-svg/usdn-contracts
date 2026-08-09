@@ -1,0 +1,48 @@
+name: USDN LongFarming exact current theft
+
+on:
+  push:
+    branches: [security/susdn-live-config]
+  workflow_dispatch:
+
+jobs:
+  quantify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Query historical pendingRewards at each liquidation block
+        env:
+          FARM: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
+          LIVE_RPC: 'https://ethereum-rpc.publicnode.com'
+          BLOCKSCOUT_RPC: 'https://eth.blockscout.com/api/eth-rpc'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export FARM LIVE_RPC BLOCKSCOUT_RPC
+          python3 - <<'PY'
+          import json, os, subprocess
+          FARM=os.environ['FARM']; RPC=os.environ['BLOCKSCOUT_RPC']; LIVE=os.environ['LIVE_RPC']
+          samples=[
+            (74200,0,5,22228018),
+            (79500,2,2,22640863),
+            (83100,0,9,23724029),
+          ]
+          def calldata(tick,ver,idx):
+              return subprocess.check_output(['cast','calldata','pendingRewards(int24,uint256,uint256)',str(tick),str(ver),str(idx)],text=True).strip()
+          def rpc_call(url, data, block):
+              payload=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_call','params':[{'to':FARM,'data':data},hex(block)]},separators=(',',':'))
+              p=subprocess.run(['curl','-fsS','--max-time','30','-H','content-type: application/json','--data',payload,url],capture_output=True,text=True)
+              return p.returncode,p.stdout.strip(),p.stderr.strip()
+          for tick,ver,idx,liq in samples:
+              data=calldata(tick,ver,idx)
+              print('SAMPLE',tick,ver,idx,'liqBlock',liq,'calldata',data)
+              code,out,err=rpc_call(RPC,data,liq)
+              print('BLOCKSCOUT_ARCHIVE_CALL',code,out,err)
+              # also test a one-block-post liquidation read to prove the historical endpoint if available
+              code2,out2,err2=rpc_call(RPC,data,liq+1)
+              print('BLOCKSCOUT_ARCHIVE_CALL_PLUS1',code2,out2,err2)
+              live=subprocess.check_output(['cast','call',FARM,'pendingRewards(int24,uint256,uint256)(uint256)',str(tick),str(ver),str(idx),'--rpc-url',LIVE],text=True).strip()
+              print('LIVE_PENDING',live)
+          PY
