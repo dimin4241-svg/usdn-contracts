@@ -1,0 +1,42 @@
+name: LRM live economics
+on:
+  workflow_dispatch:
+  push:
+    branches: [security/susdn-live-config]
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - shell: bash
+        env:
+          RPC: https://ethereum-rpc.publicnode.com
+          PROTOCOL: '0x656cB8C6d154Aad29d8771384089be5B5141f01a'
+        run: |
+          set -euo pipefail
+          c() {
+            local sig="$1"; shift
+            printf '%s=' "$sig"
+            cast call "$PROTOCOL" "$sig" "$@" --rpc-url "$RPC" 2>/dev/null || echo CALL_FAILED
+          }
+          echo "block=$(cast block-number --rpc-url "$RPC")"
+          c 'getLiquidationRewardsManager()(address)'
+          c 'getMinLongPosition()(uint256)'
+          c 'getPositionFeeBps()(uint256)'
+          c 'getPositionFee()(uint256)'
+          c 'getLiquidationPenalty()(uint24)'
+          c 'getSecurityDepositValue()(uint64)'
+          c 'getMinLeverage()(uint256)'
+          c 'getMaxLeverage()(uint256)'
+          c 'getRebalancerBonus()(uint256)'
+          LRM=$(cast call "$PROTOCOL" 'getLiquidationRewardsManager()(address)' --rpc-url "$RPC" 2>/dev/null | tr -d '\n' || true)
+          if [[ "$LRM" =~ ^0x[0-9A-Fa-f]{40}$ ]]; then
+            echo "LRM=$LRM"
+            echo -n 'rewardAsset='
+            cast call "$LRM" 'getRewardAsset()(address)' --rpc-url "$RPC" 2>/dev/null || true
+            echo -n 'params='
+            cast call "$LRM" 'getRewardsParameters()((uint32,uint32,uint32,uint32,uint64,uint16,uint16,uint128,uint128))' --rpc-url "$RPC"
+            echo "codehash=$(cast codehash "$LRM" --rpc-url "$RPC")"
+          fi
