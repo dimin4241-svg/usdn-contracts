@@ -13,16 +13,19 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
-      - name: Inspect policies, fees and public share actions
+      - name: Decode live allowlists and redemption surface
         env:
           RPC_URL: https://ethereum-rpc.publicnode.com
           VAULT: '0xF67e2dC041b8A3c39d066037d29f500757b1e886'
           COMP: '0x4d54Abd78590bf94c8406d019aFF724DAb659A84'
-          POLICY: '0xadf5a8db090627b153ef0c5726ccfdc1c7aed7bd'
-          FEE: '0xaf0dffac1ce85c3fce4c2bf50073251f615eefc4'
+          DEPOSIT_POLICY: '0xA66BAAa0cCb6468C5A2cB61f5D672C7bA0440Ee1'
+          REDEEM_POLICY: '0x823ca839DA344DA59D517b84ce3baB9FFc9f54eE'
           SUSDE: '0x9D39A5DE30e57443BfF2A8307A4256c8797A3497'
           USDN: '0xde17a000BA631c5d7c2Bd9FB692EFeA52D90DEE2'
+          USDT: '0xdAC17F958D2ee523a2206206994597C13D831ec7'
           USDNR: '0x82957d600963Ae0C529c3819Ac7C349c4D49269B'
+          OWNER: '0xB0470cF15B22a6A32c49a7C20E3821B944A76058'
+          CREATOR: '0xC3DC853dD716bd5754f421ef94fdCbac3902ab32'
           PROBE: '0x000000000000000000000000000000000000BEEF'
         shell: bash
         run: |
@@ -34,50 +37,37 @@ jobs:
           }
 
           echo "BLOCK=$(cast block-number --rpc-url "$RPC_URL")"
-          echo "--- fund gates ---"
-          c "$COMP" 'getSharesActionTimelock()(uint256)'
-          c "$COMP" 'getDenominationAsset()(address)'
-          c "$COMP" 'calcGav()(uint256)'
-          c "$COMP" 'calcGrossShareValue()(uint256)'
-          c "$VAULT" 'totalSupply()(uint256)'
-          c "$VAULT" 'sharesAreFreelyTransferable()(bool)'
+          echo "--- redemption allowlist ---"
+          c "$REDEEM_POLICY" 'getAddressListRegistry()(address)'
+          c "$REDEEM_POLICY" 'getListIdsForFund(address)(uint256[])' "$COMP"
+          c "$REDEEM_POLICY" 'passesRule(address,address[])(bool)' "$COMP" "[$SUSDE]"
+          c "$REDEEM_POLICY" 'passesRule(address,address[])(bool)' "$COMP" "[$USDN]"
+          c "$REDEEM_POLICY" 'passesRule(address,address[])(bool)' "$COMP" "[$USDT]"
+          c "$REDEEM_POLICY" 'passesRule(address,address[])(bool)' "$COMP" "[$USDNR]"
+          c "$REDEEM_POLICY" 'passesRule(address,address[])(bool)' "$COMP" "[$SUSDE,$USDNR]"
 
-          echo "--- policies ---"
-          ALL=$(cast call "$POLICY" 'getEnabledPoliciesForFund(address)(address[])' "$COMP" --rpc-url "$RPC_URL")
-          echo "ALL_POLICIES=$ALL"
-          SPEC=$(cast call "$POLICY" 'getEnabledPoliciesOnHookForFund(address,uint8)(address[])' "$COMP" 3 --rpc-url "$RPC_URL")
-          echo "SPECIFIC_REDEMPTION_POLICIES=$SPEC"
-          POSTBUY=$(cast call "$POLICY" 'getEnabledPoliciesOnHookForFund(address,uint8)(address[])' "$COMP" 0 --rpc-url "$RPC_URL")
-          echo "POST_BUY_POLICIES=$POSTBUY"
-          for p in $(echo "$ALL" | grep -oE '0x[0-9A-Fa-f]{40}'); do
-            echo "POLICY=$p"
-            c "$p" 'identifier()(string)'
-            c "$p" 'canDisable()(bool)'
-            c "$p" 'getFundSettings(address)(bytes)' "$COMP"
-            c "$p" 'getListManager()(address)'
+          echo "--- deposit recipient allowlist ---"
+          c "$DEPOSIT_POLICY" 'getAddressListRegistry()(address)'
+          c "$DEPOSIT_POLICY" 'getListIdsForFund(address)(uint256[])' "$COMP"
+          c "$DEPOSIT_POLICY" 'passesRule(address,address)(bool)' "$COMP" "$OWNER"
+          c "$DEPOSIT_POLICY" 'passesRule(address,address)(bool)' "$COMP" "$CREATOR"
+          c "$DEPOSIT_POLICY" 'passesRule(address,address)(bool)' "$COMP" "$VAULT"
+          c "$DEPOSIT_POLICY" 'passesRule(address,address)(bool)' "$COMP" "$PROBE"
+
+          REG=$(cast call "$REDEEM_POLICY" 'getAddressListRegistry()(address)' --rpc-url "$RPC_URL" | tr -d '\n')
+          echo "REGISTRY=$REG"
+          for policy in "$REDEEM_POLICY" "$DEPOSIT_POLICY"; do
+            IDS=$(cast call "$policy" 'getListIdsForFund(address)(uint256[])' "$COMP" --rpc-url "$RPC_URL")
+            for id in $(echo "$IDS" | grep -oE '[0-9]+' || true); do
+              echo "POLICY_LIST=$policy:$id"
+              c "$REG" 'getListOwner(uint256)(address)' "$id"
+              c "$REG" 'getListUpdateType(uint256)(uint8)' "$id"
+              c "$REG" 'isInList(uint256,address)(bool)' "$id" "$SUSDE"
+              c "$REG" 'isInList(uint256,address)(bool)' "$id" "$USDN"
+              c "$REG" 'isInList(uint256,address)(bool)' "$id" "$USDT"
+              c "$REG" 'isInList(uint256,address)(bool)' "$id" "$USDNR"
+              c "$REG" 'isInList(uint256,address)(bool)' "$id" "$OWNER"
+              c "$REG" 'isInList(uint256,address)(bool)' "$id" "$CREATOR"
+              c "$REG" 'isInList(uint256,address)(bool)' "$id" "$PROBE"
+            done
           done
-
-          echo "--- fees ---"
-          FEES=$(cast call "$FEE" 'getEnabledFeesForFund(address)(address[])' "$COMP" --rpc-url "$RPC_URL")
-          echo "ENABLED_FEES=$FEES"
-          for f in $(echo "$FEES" | grep -oE '0x[0-9A-Fa-f]{40}'); do
-            echo "FEE=$f"
-            c "$f" 'identifier()(string)'
-            c "$FEE" 'getFeeSharesOutstandingForFund(address,address)(uint256)' "$COMP" "$f"
-            c "$f" 'getRateForFund(address)(uint256)' "$COMP"
-            c "$f" 'getScaledPerSecondRateForFund(address)(uint256)' "$COMP"
-          done
-
-          echo "--- dry eth_call share actions from unprivileged probe ---"
-          # These are deliberately eth_call only. Failures expose the live gating/revert path without state changes.
-          c "$COMP" 'buyShares(uint256,uint256)(uint256)' 1 0 --from "$PROBE"
-          c "$COMP" 'buySharesOnBehalf(address,uint256,uint256)(uint256)' "$PROBE" 1 0 --from "$PROBE"
-          # no-share probe: enough to distinguish policy/permission gating from an absent entrypoint
-          c "$COMP" 'redeemSharesForSpecificAssets(address,uint256,address[],uint256[])(uint256[])' "$PROBE" 1 "[$USDNR]" '[1]' --from "$PROBE"
-
-          echo "--- balances for cross-asset context ---"
-          c "$SUSDE" 'balanceOf(address)(uint256)' "$VAULT"
-          c "$USDN" 'balanceOf(address)(uint256)' "$VAULT"
-          c "$USDNR" 'balanceOf(address)(uint256)' "$VAULT"
-
-          echo 'probe_complete=1'
