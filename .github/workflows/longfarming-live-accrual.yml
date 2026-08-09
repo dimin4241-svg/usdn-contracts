@@ -23,6 +23,7 @@ jobs:
           TICK: "82000"
           VERSION: "0"
           INDEX: "0"
+          SLASH_OWNER_REWARDS_WEI: "55350465282065918760293"
         run: |
           python - <<'PY'
           import os, subprocess, json
@@ -35,26 +36,31 @@ jobs:
           tick = os.environ['TICK']
           version = os.environ['VERSION']
           index = os.environ['INDEX']
+          slash_owner_rewards = int(os.environ['SLASH_OWNER_REWARDS_WEI'])
 
           rpcs = [
+              'https://eth.drpc.org',
+              'https://1rpc.io/eth',
               'https://ethereum-rpc.publicnode.com',
               'https://eth.llamarpc.com',
               'https://rpc.flashbots.net',
-              'https://eth.drpc.org',
-              'https://1rpc.io/eth',
               'https://cloudflare-eth.com',
           ]
 
           def call(block, sig, *args):
               errors = []
               for rpc in rpcs:
-                  cmd = ['cast','call','--rpc-url',rpc,'--block',str(block),long,sig,*map(str,args)]
-                  p = subprocess.run(cmd, text=True, capture_output=True, timeout=45)
+                  try:
+                      cmd = ['cast','call','--rpc-url',rpc,'--block',str(block),long,sig,*map(str,args)]
+                      p = subprocess.run(cmd, text=True, capture_output=True, timeout=45)
+                  except subprocess.TimeoutExpired:
+                      errors.append({'rpc':rpc,'stderr':'timeout'})
+                      continue
                   if p.returncode == 0:
                       out = p.stdout.strip()
                       print('CALL_OK', json.dumps({'rpc':rpc,'block':block,'sig':sig,'out':out}))
                       return out, rpc
-                  errors.append({'rpc':rpc,'stderr':p.stderr.strip()[:400]})
+                  errors.append({'rpc':rpc,'stderr':p.stderr.strip()[:240]})
               raise RuntimeError(json.dumps(errors))
 
           def first_uint(text):
@@ -69,33 +75,39 @@ jobs:
           p_pre_raw, rpc_pre = call(pre, pending_sig, tick, version, index)
           p_liq = first_uint(p_liq_raw)
           p_pre = first_uint(p_pre_raw)
-          stale_gain = p_pre - p_liq
+          post_liq = p_pre - p_liq
 
-          ts_liq_raw, _ = call(liq, total_sig)
-          ts_pre_raw, _ = call(pre, total_sig)
-          ts_liq = first_uint(ts_liq_raw)
-          ts_pre = first_uint(ts_pre_raw)
+          ts_liq = first_uint(call(liq, total_sig)[0])
+          ts_pre = first_uint(call(pre, total_sig)[0])
+          info_liq = call(liq, info_sig, tick, version, index)[0]
+          info_lines = [line.split()[0] for line in info_liq.splitlines()]
+          owner = info_lines[0]
+          shares = int(info_lines[5])
 
-          info_liq, _ = call(liq, info_sig, tick, version, index)
-          info_pre, _ = call(pre, info_sig, tick, version, index)
-
+          slash_block_extra = slash_owner_rewards - p_pre
           result = {
               'liquidationBlock': liq,
               'preSlashBlock': pre,
-              'pendingAtLiquidationWei': p_liq,
-              'pendingBeforeSlashWei': p_pre,
-              'conservativePostLiquidationAccrualWei': stale_gain,
-              'pendingAtLiquidationSDEX': str(Decimal(p_liq) / Decimal(10**18)),
-              'pendingBeforeSlashSDEX': str(Decimal(p_pre) / Decimal(10**18)),
-              'conservativePostLiquidationAccrualSDEX': str(Decimal(stale_gain) / Decimal(10**18)),
+              'owner': owner,
+              'positionShares': shares,
               'totalSharesAtLiquidation': ts_liq,
               'totalSharesBeforeSlash': ts_pre,
-              'positionInfoAtLiquidation': info_liq,
-              'positionInfoBeforeSlash': info_pre,
+              'staleShareOfDenominatorPct': str(Decimal(shares) * 100 / Decimal(ts_liq)),
+              'pendingAtLiquidationWei': p_liq,
+              'pendingBeforeSlashWei': p_pre,
+              'conservativePostLiquidationAccrualWei': post_liq,
+              'pendingAtLiquidationSDEX': str(Decimal(p_liq) / Decimal(10**18)),
+              'pendingBeforeSlashSDEX': str(Decimal(p_pre) / Decimal(10**18)),
+              'conservativePostLiquidationAccrualSDEX': str(Decimal(post_liq) / Decimal(10**18)),
+              'slashOwnerRewardsSDEX': str(Decimal(slash_owner_rewards) / Decimal(10**18)),
+              'additionalRewardBookedInSlashBlockSDEX': str(Decimal(slash_block_extra) / Decimal(10**18)),
+              'postLiquidationPctOfSlashPayout': str(Decimal(post_liq) * 100 / Decimal(slash_owner_rewards)),
               'rpcForLiquidationPending': rpc_liq,
               'rpcForPreSlashPending': rpc_pre,
           }
           print('LIVE_ACCRUAL_RESULT', json.dumps(result, sort_keys=True))
-          if stale_gain <= 0:
-              raise SystemExit('Expected positive post-liquidation accrual')
+
+          assert post_liq > 0
+          assert ts_liq == ts_pre
+          assert slash_owner_rewards > p_pre
           PY
