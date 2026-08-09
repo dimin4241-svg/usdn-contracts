@@ -1,0 +1,61 @@
+name: USDN LongFarming fast current stale check
+
+on:
+  push:
+    branches: [security/susdn-live-config]
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Check the 17 currently reconstructed LongFarming positions
+        env:
+          FARM: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
+          PROTOCOL: '0x656cb8c6d154aad29d8771384089be5b5141f01a'
+          RPC_URL: 'https://ethereum-rpc.publicnode.com'
+        shell: bash
+        run: |
+          set -euo pipefail
+          positions=(
+            '65800 0 2'
+            '67800 0 0'
+            '68300 0 1'
+            '68600 0 1'
+            '68600 0 2'
+            '71400 0 4'
+            '73100 0 5'
+            '73100 0 6'
+            '73100 0 7'
+            '73300 0 14'
+            '73500 0 6'
+            '73500 0 7'
+            '73600 0 10'
+            '74200 0 5'
+            '74500 1 3'
+            '79500 2 2'
+            '83100 0 9'
+          )
+          stale=0
+          stale_pending=0
+          total_pending=0
+          for p in "${positions[@]}"; do
+            read -r tick ver idx <<< "$p"
+            cur=$(cast call "$PROTOCOL" 'getTickVersion(int24)(uint256)' "$tick" --rpc-url "$RPC_URL" | awk '{print $1}')
+            pending=$(cast call "$FARM" 'pendingRewards(int24,uint256,uint256)(uint256)' "$tick" "$ver" "$idx" --rpc-url "$RPC_URL" | awk '{print $1}')
+            total_pending=$((total_pending + pending))
+            is_stale=false
+            if [ "$cur" != "$ver" ]; then
+              is_stale=true
+              stale=$((stale+1))
+              if [ "$pending" != '0' ]; then stale_pending=$((stale_pending+1)); fi
+            fi
+            echo "POSITION tick=$tick storedVersion=$ver currentVersion=$cur index=$idx stale=$is_stale pending=$pending"
+          done
+          echo "STALE_COUNT=$stale"
+          echo "STALE_WITH_PENDING=$stale_pending"
+          echo "SUM_PENDING=$total_pending"
+          echo "STORAGE_COUNT=$(cast call "$FARM" 'getPositionsCount()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')"
