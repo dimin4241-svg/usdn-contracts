@@ -1,0 +1,81 @@
+name: sUSDN Enzyme live configuration probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [security/usdn-susdn-enzyme]
+    paths:
+      - '.github/workflows/security-susdn-enzyme-live-probe.yml'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      RPC_URL: https://ethereum-rpc.publicnode.com
+      SUSDN: 0xF67e2dC041b8A3c39d066037d29f500757b1e886
+      ACCESSOR: 0x0b1b0323f61ADAa27664cF1dA76a1ADAD026e7DC
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Probe sUSDN and Enzyme configuration
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo '=== BASIC VAULT ==='
+          for sig in \
+            'name()(string)' \
+            'symbol()(string)' \
+            'decimals()(uint8)' \
+            'totalSupply()(uint256)' \
+            'getAccessor()(address)' \
+            'getCreator()(address)' \
+            'getOwner()(address)' \
+            'getNominatedOwner()(address)' \
+            'getVaultLib()(address)' \
+            'getGasRelayPaymaster()(address)' \
+            'getTrackedAssets()(address[])' \
+            'getActiveExternalPositions()(address[])'; do
+              echo "CALL $sig"
+              cast call "$SUSDN" "$sig" --rpc-url "$RPC_URL" || true
+          done
+
+          echo '=== EIP1967 IMPLEMENTATION ==='
+          cast storage "$SUSDN" 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc --rpc-url "$RPC_URL" || true
+
+          echo '=== ACCESSOR / COMPTROLLER ==='
+          for sig in \
+            'getVaultProxy()(address)' \
+            'getDenominationAsset()(address)' \
+            'getSharesActionTimelock()(uint256)' \
+            'getFundDeployer()(address)' \
+            'calcGav()(uint256)' \
+            'calcGrossShareValue()(uint256)' \
+            'getAutoProtocolFeeShares()(uint256)' \
+            'getLastSharesBoughtTimestamp(address)(uint256)'; do
+              echo "CALL $sig"
+              cast call "$ACCESSOR" "$sig" 0x0000000000000000000000000000000000000001 --rpc-url "$RPC_URL" 2>/dev/null || \
+              cast call "$ACCESSOR" "$sig" --rpc-url "$RPC_URL" || true
+          done
+
+          echo '=== TRACKED ASSET BALANCES ==='
+          TRACKED=$(cast call "$SUSDN" 'getTrackedAssets()(address[])' --rpc-url "$RPC_URL" 2>/dev/null || true)
+          echo "TRACKED_RAW=$TRACKED"
+          echo "$TRACKED" | grep -oE '0x[0-9a-fA-F]{40}' | while read -r token; do
+            echo "ASSET=$token"
+            echo -n '  symbol='; cast call "$token" 'symbol()(string)' --rpc-url "$RPC_URL" 2>/dev/null || echo '?'
+            echo -n '  decimals='; cast call "$token" 'decimals()(uint8)' --rpc-url "$RPC_URL" 2>/dev/null || echo '?'
+            echo -n '  vaultBalance='; cast call "$token" 'balanceOf(address)(uint256)' "$SUSDN" --rpc-url "$RPC_URL" 2>/dev/null || echo '?'
+            echo -n '  accessorBalance='; cast call "$token" 'balanceOf(address)(uint256)' "$ACCESSOR" --rpc-url "$RPC_URL" 2>/dev/null || echo '?'
+          done
+
+          echo '=== COMMON KNOWN ASSETS ==='
+          for token in \
+            0xde17a000BA631c5d7c2Bd9FB692EFeA52D90DEE2 \
+            0x9D39A5DE30e57443BfF2A8307A4256c8797A3497 \
+            0x4c9EDD5852cd905f086C759E8383e09bff1E68B3; do
+            echo "KNOWN=$token"
+            echo -n '  symbol='; cast call "$token" 'symbol()(string)' --rpc-url "$RPC_URL" 2>/dev/null || echo '?'
+            echo -n '  vaultBalance='; cast call "$token" 'balanceOf(address)(uint256)' "$SUSDN" --rpc-url "$RPC_URL" 2>/dev/null || echo '?'
+          done
