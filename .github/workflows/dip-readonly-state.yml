@@ -18,10 +18,38 @@ jobs:
           set -euo pipefail
           echo "block=$(cast block-number --rpc-url "$RPC")"
           echo "eth=$(cast balance "$DIP" --rpc-url "$RPC")"
-          echo "asset=$(cast call "$DIP" 'getAsset()(address)' --rpc-url "$RPC")"
-          echo "protocol=$(cast call "$DIP" 'getUsdnProtocol()(address)' --rpc-url "$RPC")"
-          echo "pending=$(cast call "$DIP" 'getPendingAssetsAmount()(uint128)' --rpc-url "$RPC")"
-          echo "version=$(cast call "$DIP" 'getPositionVersion()(uint128)' --rpc-url "$RPC")"
-          echo "lastLiquidated=$(cast call "$DIP" 'getLastLiquidatedVersion()(uint128)' --rpc-url "$RPC")"
           ASSET=$(cast call "$DIP" 'getAsset()(address)' --rpc-url "$RPC")
+          PROTOCOL=$(cast call "$DIP" 'getUsdnProtocol()(address)' --rpc-url "$RPC")
+          VERSION=$(cast call "$DIP" 'getPositionVersion()(uint128)' --rpc-url "$RPC" | awk '{print $1}')
+          echo "asset=$ASSET"
+          echo "protocol=$PROTOCOL"
+          echo "pending=$(cast call "$DIP" 'getPendingAssetsAmount()(uint128)' --rpc-url "$RPC")"
+          echo "version=$VERSION"
+          echo "lastLiquidated=$(cast call "$DIP" 'getLastLiquidatedVersion()(uint128)' --rpc-url "$RPC")"
           echo "assetBalance=$(cast call "$ASSET" 'balanceOf(address)(uint256)' "$DIP" --rpc-url "$RPC")"
+          echo "closeLockedUntil=$(cast call "$DIP" 'getCloseLockedUntil()(uint256)' --rpc-url "$RPC")"
+          echo "positionMaxLeverage=$(cast call "$DIP" 'getPositionMaxLeverage()(uint256)' --rpc-url "$RPC")"
+          echo '--- current position data ---'
+          POSITION=$(cast call "$DIP" 'getPositionData(uint128)((uint128,int24,uint256,uint256,uint256))' "$VERSION" --rpc-url "$RPC")
+          echo "$POSITION"
+          echo '--- previous position data ---'
+          if [ "$VERSION" -gt 0 ]; then
+            cast call "$DIP" 'getPositionData(uint128)((uint128,int24,uint256,uint256,uint256))' $((VERSION-1)) --rpc-url "$RPC"
+          fi
+          echo '--- Protocol relation ---'
+          echo "protocolRebalancer=$(cast call "$PROTOCOL" 'getRebalancer()(address)' --rpc-url "$RPC")"
+          echo "protocolAsset=$(cast call "$PROTOCOL" 'getAsset()(address)' --rpc-url "$RPC")"
+          # Parse current position tuple with cast --json, then query the Protocol using exact ID.
+          JSON=$(cast call "$DIP" 'getPositionData(uint128)((uint128,int24,uint256,uint256,uint256))' "$VERSION" --rpc-url "$RPC" --json)
+          export JSON
+          python3 - <<'PY' > /tmp/posid.txt
+          import json,os
+          x=json.loads(os.environ['JSON'])
+          # cast JSON is one returned tuple as nested array; normalize both possible shapes
+          v=x[0] if isinstance(x,list) and len(x)==1 and isinstance(x[0],list) else x
+          print(v[1],v[2],v[3])
+          PY
+          read -r TICK TVER IDX < /tmp/posid.txt
+          echo "posId=$TICK/$TVER/$IDX"
+          echo "protocolTickVersion=$(cast call "$PROTOCOL" 'getTickVersion(int24)(uint256)' "$TICK" --rpc-url "$RPC")"
+          echo "protocolPosition=$(cast call "$PROTOCOL" 'getLongPosition((int24,uint256,uint256))((bool,uint40,address,uint128,uint128),uint24)' "($TICK,$TVER,$IDX)" --rpc-url "$RPC")"
