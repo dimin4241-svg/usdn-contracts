@@ -19,100 +19,127 @@ jobs:
 
       - name: Reconstruct Deposit/Withdraw/Slash position-count timeline
         env:
-          RPC_URL: https://ethereum-rpc.blockreq.com/v1/rpc/public
           LONG_FARMING: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
+          CREATION_TX: '0x7368a9b0b2c5bb595ed6100018913a4f632b531bb199775cf9f733231ae07f67'
         run: |
           set -euo pipefail
+          export DEP_TOPIC=$(cast keccak 'Deposit(address,int24,uint256,uint256)')
+          export WDR_TOPIC=$(cast keccak 'Withdraw(address,int24,uint256,uint256)')
+          export SLS_TOPIC=$(cast keccak 'Slash(address,uint256,uint256,int24,uint256,uint256)')
           python3 - <<'PY'
-          import os, json, subprocess
+          import os, json, urllib.request, urllib.parse
 
-          rpc = os.environ['RPC_URL']
+          base = 'https://eth.blockscout.com/api/v2'
           addr = os.environ['LONG_FARMING']
+          creation_tx = os.environ['CREATION_TX']
+          dep = os.environ['DEP_TOPIC'].lower()
+          wdr = os.environ['WDR_TOPIC'].lower()
+          sls = os.environ['SLS_TOPIC'].lower()
           lo, hi = 21_683_491, 25_056_370
-          chunk = 9_999
 
-          events = {
-              'Deposit': 'Deposit(address indexed owner,int24 tick,uint256 tickVersion,uint256 index)',
-              'Withdraw': 'Withdraw(address indexed owner,int24 tick,uint256 tickVersion,uint256 index)',
-              'Slash': 'Slash(address indexed notifier,uint256 notifierRewards,uint256 ownerRewards,int24 tick,uint256 tickVersion,uint256 index)',
-          }
+          def get_json(url):
+              req = urllib.request.Request(url, headers={'User-Agent':'USDN-security-readonly/1.0'})
+              with urllib.request.urlopen(req, timeout=60) as r:
+                  return json.load(r)
 
-          def get_logs(kind, sig, start, end):
-              cmd = [
-                  'cast','logs','--json','--rpc-url',rpc,'--address',addr,
-                  '--from-block',str(start),'--to-block',str(end),sig
-              ]
-              try:
-                  raw = subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT).strip()
-              except subprocess.CalledProcessError as e:
-                  print('CAST_LOGS_FAILURE',kind,start,end)
-                  print(e.output)
-                  raise
-              return json.loads(raw) if raw else []
+          tx = get_json(f'{base}/transactions/{creation_tx}')
+          deployment = int(tx['block']) if isinstance(tx['block'], int) else int(tx['block'], 0)
+          print('deploymentBlock', deployment)
+          print('creationTx', creation_tx)
 
-          logs=[]
-          for start in range(lo, hi+1, chunk):
-              end=min(start+chunk-1,hi)
-              n=0
-              for kind,sig in events.items():
-                  batch=get_logs(kind,sig,start,end)
-                  for x in batch:
-                      x['_kind']=kind
-                  logs.extend(batch)
-                  n += len(batch)
-              print('scanned',start,end,'events',n)
+          logs = []
+          url = f'{base}/addresses/{addr}/logs'
+          page = 0
+          while True:
+              out = get_json(url)
+              page += 1
+              items = out.get('items', [])
+              if not items:
+                  break
+              blocks = [int(x['block_number']) for x in items]
+              print('page', page, 'items', len(items), 'blockRange', min(blocks), max(blocks))
+              for x in items:
+                  b = int(x['block_number'])
+                  if lo <= b <= hi and x.get('topics'):
+                      t0 = x['topics'][0].lower()
+                      if t0 == dep:
+                          kind = 'Deposit'
+                      elif t0 == wdr:
+                          kind = 'Withdraw'
+                      elif t0 == sls:
+                          kind = 'Slash'
+                      else:
+                          continue
+                      logs.append({
+                          'block': b,
+                          'index': int(x.get('index', 0)),
+                          'kind': kind,
+                          'tx': x.get('transaction_hash'),
+                      })
+              if min(blocks) <= lo:
+                  break
+              nxt = out.get('next_page_params')
+              if not nxt:
+                  break
+              url = f'{base}/addresses/{addr}/logs?' + urllib.parse.urlencode(nxt)
+              if page > 500:
+                  raise RuntimeError('unexpected pagination depth')
 
-          def to_int(v):
-              if isinstance(v,int): return v
-              return int(v,16) if str(v).startswith('0x') else int(v)
+          logs.sort(key=lambda x:(x['block'], x['index']))
+          count = 0
+          zero_windows = []
+          zero_start = max(deployment, lo)
+          transitions = []
 
-          logs.sort(key=lambda x:(to_int(x['blockNumber']),to_int(x.get('transactionIndex',0)),to_int(x.get('logIndex',0))))
-
-          count=0
-          zero_windows=[]
-          zero_start=lo
-          transitions=[]
           for log in logs:
-              block=to_int(log['blockNumber'])
-              kind=log['_kind']
-              before=count
-              if kind=='Deposit': count += 1
-              else: count -= 1
+              block = log['block']
+              kind = log['kind']
+              before = count
+              if kind == 'Deposit':
+                  count += 1
+              else:
+                  count -= 1
               if count < 0:
                   raise RuntimeError(f'negative reconstructed count at block {block}, kind={kind}')
-              transitions.append((block,kind,before,count,log.get('transactionHash')))
-              if before==0 and count>0 and zero_start is not None:
-                  zero_windows.append((zero_start,block))
-                  zero_start=None
-              elif before>0 and count==0:
-                  zero_start=block
-          if zero_start is not None:
-              zero_windows.append((zero_start,hi+1))
+              transitions.append((block, kind, before, count, log['tx']))
+              if before == 0 and count > 0 and zero_start is not None:
+                  zero_windows.append((zero_start, block))
+                  zero_start = None
+              elif before > 0 and count == 0:
+                  zero_start = block
 
-          print('totalRelevantEvents',len(transitions))
-          print('finalReconstructedCountAtPositiveEnd',count)
+          if zero_start is not None:
+              zero_windows.append((zero_start, hi + 1))
+
+          print('totalRelevantEvents', len(transitions))
+          print('finalReconstructedCountAtPositiveEnd', count)
           print('first20Transitions')
           for x in transitions[:20]: print(x)
           print('last20Transitions')
           for x in transitions[-20:]: print(x)
 
-          phases=[
-              (21_684_000,21_776_314,149_146_814_241_486_068_111),
-              (21_776_314,22_490_167,83_474_852_560_444_052_688),
-              (22_490_167,23_808_566,17_439_128_063_659_028_867),
-              (24_420_560,25_056_370,31_455_938_094_713_829_603),
+          phases = [
+              (21_684_000, 21_776_314, 149_146_814_241_486_068_111),
+              (21_776_314, 22_490_167, 83_474_852_560_444_052_688),
+              (22_490_167, 23_808_566, 17_439_128_063_659_028_867),
+              (24_420_560, 25_056_370, 31_455_938_094_713_829_603),
           ]
-          found=[]
+
+          found = []
           print('zeroWindowsIntersectingPositiveEmission')
-          for zs,ze in zero_windows:
-              for ps,pe,rpb in phases:
-                  s=max(zs,ps); e=min(ze,pe)
-                  if s<e:
-                      blocks=e-s
-                      emissions=blocks*rpb
-                      found.append((s,e,blocks,rpb,emissions))
-                      print('ZERO_POSITIVE',s,e,'blocks',blocks,'rewardPerBlock',rpb,'theoreticalIdleEmissionsWei',emissions)
-          print('zeroPositiveWindowCount',len(found))
+          for zs, ze in zero_windows:
+              for ps, pe, rpb in phases:
+                  s = max(zs, ps)
+                  e = min(ze, pe)
+                  if s < e:
+                      blocks = e - s
+                      emissions = blocks * rpb
+                      found.append((s, e, blocks, rpb, emissions))
+                      print('ZERO_POSITIVE', s, e, 'blocks', blocks,
+                            'rewardPerBlock', rpb,
+                            'theoreticalIdleEmissionsWei', emissions)
+
+          print('zeroPositiveWindowCount', len(found))
           if not found:
               print('NO historical zero-share window intersects a positive-emission phase')
           PY
