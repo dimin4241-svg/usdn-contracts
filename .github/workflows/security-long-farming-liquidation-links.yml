@@ -1,0 +1,173 @@
+name: USDN LongFarming liquidation links
+
+on:
+  push:
+    branches: [security/susdn-live-config]
+  workflow_dispatch:
+
+jobs:
+  correlate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Link each farming slash to the exact Protocol liquidation block
+        env:
+          FARM: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
+          PROTOCOL: '0x656cb8c6d154aad29d8771384089be5b5141f01a'
+          PROVIDER: '0x7d85C0905a6E1Ab5837a0b57cD94A419d3a77523'
+          CAMPAIGN: '20'
+          RPC_URL: 'https://ethereum-rpc.publicnode.com'
+          FROM_BLOCK: '21681344'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export FARM PROTOCOL PROVIDER CAMPAIGN RPC_URL FROM_BLOCK
+          python3 - <<'PY'
+          import json, os, subprocess, time, statistics
+          from urllib.parse import urlencode
+
+          BASE='https://eth.blockscout.com'
+          API2=BASE+'/api/v2'
+          FARM=os.environ['FARM']; PROTOCOL=os.environ['PROTOCOL']; START=int(os.environ['FROM_BLOCK'])
+
+          def get(url):
+              last=None
+              for attempt in range(8):
+                  try:
+                      out=subprocess.check_output(['curl','-fsS','--retry','2','--retry-delay','1','--max-time','30','-H','accept: application/json',url],text=True,stderr=subprocess.STDOUT,timeout=35)
+                      return json.loads(out)
+                  except Exception as e:
+                      last=e; time.sleep(min(3,0.4*(attempt+1)))
+              raise last
+
+          def keccak(sig): return subprocess.check_output(['cast','keccak',sig],text=True).strip().lower()
+          def words(data):
+              h=(data or '0x')[2:]; return [int(h[i:i+64],16) for i in range(0,len(h),64) if h[i:i+64]]
+          def s24_word(x):
+              v=x & ((1<<24)-1); return v-(1<<24) if v&(1<<23) else v
+          def s24_topic(t): return s24_word(int(t,16))
+
+          slash_topic=keccak('Slash(address,uint256,uint256,int24,uint256,uint256)')
+          liq_topic=keccak('LiquidatedTick(int24,uint256,uint256,uint256,int256)')
+
+          # Indexed LongFarming logs, then retain Slash only.
+          slashes=[]; params={}; pages=0
+          while True:
+              url=f'{API2}/addresses/{FARM}/logs' + (('?' + urlencode(params)) if params else '')
+              obj=get(url); pages+=1
+              for x in obj.get('items',[]):
+                  if x.get('topics') and x['topics'][0].lower()==slash_topic:
+                      w=words(x['data'])
+                      slashes.append({
+                          'block':int(x['block_number']),
+                          'tick':s24_word(w[2]), 'version':w[3], 'index':w[4],
+                          'notifierRewards':w[0], 'ownerRewards':w[1],
+                          'tx':x.get('transaction_hash')
+                      })
+              nxt=obj.get('next_page_params')
+              if not nxt: break
+              params=nxt
+          slashes.sort(key=lambda x:x['block'])
+          print('SLASH_COUNT',len(slashes),'PAGES',pages)
+
+          head=int(subprocess.check_output(['cast','block-number','--rpc-url',os.environ['RPC_URL']],text=True).strip())
+
+          # Legacy Blockscout logs API supports topic0 filtering. Split ranges to remain below the 1000-result cap.
+          liquidations=[]
+          def fetch_range(a,b):
+              q=urlencode({'module':'logs','action':'getLogs','fromBlock':a,'toBlock':b,'address':PROTOCOL,'topic0':liq_topic})
+              obj=get(BASE+'/api?'+q)
+              res=obj.get('result',[])
+              if isinstance(res,str):
+                  if 'No logs' in res: return []
+                  raise RuntimeError(res)
+              if len(res)>=1000 and a<b:
+                  m=(a+b)//2
+                  return fetch_range(a,m)+fetch_range(m+1,b)
+              return res
+
+          chunk=100000
+          for a in range(START,head+1,chunk):
+              b=min(a+chunk-1,head)
+              part=fetch_range(a,b)
+              if part: print('LIQ_CHUNK',a,b,len(part))
+              liquidations.extend(part)
+              time.sleep(0.1)
+
+          liq_by_key={}
+          for x in liquidations:
+              ts=x.get('topics',[])
+              if len(ts)<3: continue
+              tick=s24_topic(ts[1]); ver=int(ts[2],16); block=int(x['blockNumber'],16)
+              liq_by_key.setdefault((tick,ver),[]).append(block)
+          for v in liq_by_key.values(): v.sort()
+          print('LIQUIDATED_TICK_EVENTS',len(liquidations),'UNIQUE_TICK_VERSIONS',len(liq_by_key))
+
+          linked=[]; missing=[]
+          for s in slashes:
+              candidates=[b for b in liq_by_key.get((s['tick'],s['version']),[]) if b<=s['block']]
+              if not candidates:
+                  missing.append(s); continue
+              lb=max(candidates); row={**s,'liqBlock':lb,'delay':s['block']-lb}
+              linked.append(row)
+
+          delays=[x['delay'] for x in linked]
+          print('LINKED',len(linked),'MISSING',len(missing))
+          if delays:
+              print('DELAY_STATS min',min(delays),'median',statistics.median(delays),'max',max(delays),'gt0',sum(d>0 for d in delays),'gte10',sum(d>=10 for d in delays),'gte100',sum(d>=100 for d in delays),'gte1000',sum(d>=1000 for d in delays))
+
+          # Print the most probative rows: longest delays and largest payouts.
+          print('TOP_DELAY_BEGIN')
+          for r in sorted(linked,key=lambda x:(x['delay'],x['ownerRewards']+x['notifierRewards']),reverse=True)[:30]:
+              print('LINK',r['tick'],r['version'],r['index'],'liq',r['liqBlock'],'slash',r['block'],'delay',r['delay'],'notifierRewards',r['notifierRewards'],'ownerRewards',r['ownerRewards'],'totalRewards',r['notifierRewards']+r['ownerRewards'],'tx',r['tx'])
+          print('TOP_DELAY_END')
+          print('TOP_PAYOUT_BEGIN')
+          for r in sorted(linked,key=lambda x:x['ownerRewards']+x['notifierRewards'],reverse=True)[:20]:
+              print('LINK',r['tick'],r['version'],r['index'],'liq',r['liqBlock'],'slash',r['block'],'delay',r['delay'],'notifierRewards',r['notifierRewards'],'ownerRewards',r['ownerRewards'],'totalRewards',r['notifierRewards']+r['ownerRewards'],'tx',r['tx'])
+          print('TOP_PAYOUT_END')
+          if missing:
+              print('MISSING_SAMPLE',[(x['tick'],x['version'],x['index'],x['block'],x['tx']) for x in missing[:20]])
+          PY
+
+          echo '--- reward schedule ---'
+          LEN=$(cast call "$PROVIDER" 'rewardInfoLen(uint256)(uint256)' "$CAMPAIGN" --rpc-url "$RPC_URL" | awk '{print $1}')
+          echo "REWARD_INFO_LEN=$LEN"
+          for ((i=0; i<LEN; i++)); do
+            row=$(cast call "$PROVIDER" 'campaignRewardInfo(uint256,uint256)(uint256,uint256)' "$CAMPAIGN" "$i" --rpc-url "$RPC_URL")
+            echo "REWARD_SEGMENT index=$i $row"
+          done
+
+          echo '--- current active positions and tick versions ---'
+          # Reconstruct active IDs from indexed LongFarming logs again, compactly, then compare against current Protocol versions.
+          python3 - <<'PY' > /tmp/active.tsv
+          import json, os, subprocess
+          from urllib.parse import urlencode
+          BASE='https://eth.blockscout.com/api/v2'; FARM=os.environ['FARM']
+          def get(url): return json.loads(subprocess.check_output(['curl','-fsS','--max-time','30',url],text=True))
+          def k(s): return subprocess.check_output(['cast','keccak',s],text=True).strip().lower()
+          dep=k('Deposit(address,int24,uint256,uint256)'); wd=k('Withdraw(address,int24,uint256,uint256)'); sl=k('Slash(address,uint256,uint256,int24,uint256,uint256)')
+          active={}; p={}
+          def w(d):
+              h=d[2:]; return [int(h[i:i+64],16) for i in range(0,len(h),64) if h[i:i+64]]
+          def s(x):
+              v=x&((1<<24)-1); return v-(1<<24) if v&(1<<23) else v
+          while True:
+              o=get(f'{BASE}/addresses/{FARM}/logs'+(('?'+urlencode(p)) if p else ''))
+              for x in o.get('items',[]):
+                  if not x.get('topics'): continue
+                  t=x['topics'][0].lower(); z=w(x['data'])
+                  if t==dep: active[(s(z[0]),z[1],z[2])]=1
+                  elif t==wd: active.pop((s(z[0]),z[1],z[2]),None)
+                  elif t==sl: active.pop((s(z[2]),z[3],z[4]),None)
+              p=o.get('next_page_params')
+              if not p: break
+          for x in sorted(active): print(*x,sep='\t')
+          PY
+          while IFS=$'\t' read -r tick ver idx; do
+            cur=$(cast call "$PROTOCOL" 'getTickVersion(int24)(uint256)' "$tick" --rpc-url "$RPC_URL" | awk '{print $1}')
+            pending=$(cast call "$FARM" 'pendingRewards(int24,uint256,uint256)(uint256)' "$tick" "$ver" "$idx" --rpc-url "$RPC_URL" 2>/dev/null | awk '{print $1}' || true)
+            echo "ACTIVE tick=$tick version=$ver index=$idx currentVersion=$cur liquidated=$([ "$cur" != "$ver" ] && echo true || echo false) pending=$pending"
+          done < /tmp/active.tsv
