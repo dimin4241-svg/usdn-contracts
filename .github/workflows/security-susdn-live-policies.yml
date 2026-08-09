@@ -14,6 +14,12 @@ jobs:
     env:
       RPC_URL: "https://ethereum-rpc.publicnode.com"
       ACCESSOR: "0x4d54Abd78590bf94c8406d019aFF724DAb659A84"
+      ALLOWED_REDEMPTION_POLICY: "0x823ca839DA344DA59D517b84ce3baB9FFc9f54eE"
+      SUSDE: "0x9D39A5DE30e57443BfF2A8307A4256c8797A3497"
+      USDN: "0xde17a000BA631c5d7c2Bd9FB692EFeA52D90DEE2"
+      USDT: "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+      USDNR: "0x82957d600963Ae0C529c3819Ac7C349c4D49269B"
+      WETH: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
     steps:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
@@ -44,14 +50,20 @@ jobs:
 
           FEES=$(cast call "$FM" 'getEnabledFeesForFund(address)(address[])' "$ACCESSOR" --rpc-url "$RPC_URL")
           echo "ENABLED_FEES=$FEES"
-          python3 -c 'import re,sys; print("\n".join(re.findall(r"0x[a-fA-F0-9]{40}", sys.argv[1])))' "$FEES" > /tmp/fees.txt
-          while read -r f; do
-            [ -z "$f" ] && continue
-            echo "FEE=$f"
-            echo -n '  identifier='; cast call "$f" 'identifier()(string)' --rpc-url "$RPC_URL" || true
-            echo -n '  settlesOnBuyShares='; cast call "$f" 'settlesOnBuyShares()(bool)' --rpc-url "$RPC_URL" || true
-            echo -n '  settlesOnRedeemShares='; cast call "$f" 'settlesOnRedeemShares()(bool)' --rpc-url "$RPC_URL" || true
-          done < /tmp/fees.txt
 
           echo '=== REDEMPTION HOOK POLICIES ==='
           cast call "$PM" 'getEnabledPoliciesOnHookForFund(address,uint8)(address[])' "$ACCESSOR" 3 --rpc-url "$RPC_URL" || true
+
+          echo '=== ALLOWED SPECIFIC REDEMPTION ASSETS ==='
+          echo -n 'LIST_IDS='; cast call "$ALLOWED_REDEMPTION_POLICY" 'getListIdsForFund(address)(uint256[])' "$ACCESSOR" --rpc-url "$RPC_URL"
+          echo -n 'LIST_REGISTRY='; cast call "$ALLOWED_REDEMPTION_POLICY" 'getAddressListRegistry()(address)' --rpc-url "$RPC_URL"
+          for pair in \
+            "sUSDe:$SUSDE" \
+            "USDN:$USDN" \
+            "USDT:$USDT" \
+            "USDnr:$USDNR" \
+            "WETH:$WETH"; do
+            name=${pair%%:*}; asset=${pair#*:}
+            echo -n "ALLOWED_${name}="
+            cast call "$ALLOWED_REDEMPTION_POLICY" 'passesRule(address,address[])(bool)' "$ACCESSOR" "[$asset]" --rpc-url "$RPC_URL"
+          done
