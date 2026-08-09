@@ -19,14 +19,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, urllib.request, os
+          import json, urllib.request, os, re
           addr=os.environ['ADDRESS']
           url=f'https://eth.blockscout.com/api/v2/smart-contracts/{addr}'
           req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0 USDN-security-readonly'})
           with urllib.request.urlopen(req,timeout=60) as r:
               item=json.load(r)
           print('ContractName',item.get('name'))
-          keys=('Dispatcher.sol','LockAndMap.sol','PaymentLib.sol','UsdnProtocolRouterLib.sol','UsdnProtocolRouter.sol','Sweep.sol','TransientStorageLib.sol','UniversalRouter.sol')
           sources=[]
           main=item.get('source_code') or ''
           if main:
@@ -35,6 +34,21 @@ jobs:
               if isinstance(entry,dict):
                   sources.append((entry.get('file_path') or entry.get('name') or '', entry.get('source_code') or ''))
           print('sourceCount',len(sources))
+
+          print('\n===== TRANSIENT STORAGE INVENTORY =====')
+          for path,content in sources:
+              if any(x in content for x in ('tstore(', 'tload(', 'transient.', 'TRANSIENT_', 'LOCKED_BY_SLOT')):
+                  print('\n---',path,'---')
+                  lines=content.splitlines()
+                  for i,line in enumerate(lines,1):
+                      if any(x in line for x in ('tstore(', 'tload(', 'transient.', 'TRANSIENT_', 'LOCKED_BY_SLOT','IS_NOT_LOCKED')):
+                          lo=max(1,i-3); hi=min(len(lines),i+4)
+                          for j in range(lo,hi+1):
+                              print(f'{j}: {lines[j-1]}')
+                          print()
+
+          print('\n===== CALLBACK / LOCK FILES =====')
+          keys=('LockAndMsgSender.sol','LockAndMap.sol','PaymentLib.sol','UsdnProtocolRouterLib.sol','V3SwapRouter.sol','SmardexRouter.sol','TransientStorageLib.sol')
           for path,content in sources:
               if path.endswith(keys):
                   print('\n===== SOURCE',path,'=====')
