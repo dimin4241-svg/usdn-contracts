@@ -1,0 +1,156 @@
+name: USDN LongFarming reward ledger solvency
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [security/susdn-live-config]
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Sum all current LongFarming reward liabilities with Python big integers
+        env:
+          FARM: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
+          PROTOCOL: '0x656cb8c6d154aad29d8771384089be5b5141f01a'
+          RPC_URL: 'https://ethereum-rpc.publicnode.com'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export FARM PROTOCOL RPC_URL
+          python3 - <<'PY'
+          import json, os, subprocess, time
+          from urllib.parse import urlencode
+
+          FARM=os.environ['FARM']
+          PROTOCOL=os.environ['PROTOCOL']
+          RPC=os.environ['RPC_URL']
+          BASE='https://eth.blockscout.com/api/v2'
+
+          def sh(args):
+              return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT, timeout=45).strip()
+
+          def call(addr, sig, *args):
+              out=sh(['cast','call',addr,sig,*map(str,args),'--rpc-url',RPC])
+              return out.split()[0]
+
+          def call_int(addr, sig, *args):
+              return int(call(addr,sig,*args),0)
+
+          def get(url):
+              last=None
+              for attempt in range(6):
+                  try:
+                      out=sh(['curl','-fsS','--retry','2','--retry-delay','1','--max-time','30',url])
+                      return json.loads(out)
+                  except Exception as e:
+                      last=e; time.sleep(0.5*(attempt+1))
+              raise last
+
+          def keccak(sig):
+              return sh(['cast','keccak',sig]).lower()
+
+          def words(data):
+              h=data[2:]
+              return [int(h[i:i+64],16) for i in range(0,len(h),64) if h[i:i+64]]
+
+          def s24(x):
+              v=x & ((1<<24)-1)
+              return v-(1<<24) if v&(1<<23) else v
+
+          dep=keccak('Deposit(address,int24,uint256,uint256)')
+          wd=keccak('Withdraw(address,int24,uint256,uint256)')
+          sl=keccak('Slash(address,uint256,uint256,int24,uint256,uint256)')
+
+          active={}
+          params={}
+          pages=0
+          while True:
+              url=f'{BASE}/addresses/{FARM}/logs'+(('?'+urlencode(params)) if params else '')
+              obj=get(url); pages+=1
+              for x in obj.get('items',[]):
+                  if not x.get('topics'): continue
+                  topic=x['topics'][0].lower(); w=words(x['data'])
+                  if topic==dep:
+                      key=(s24(w[0]),w[1],w[2])
+                      active[key]={
+                          'owner':'0x'+x['topics'][1][-40:],
+                          'depositBlock':int(x['block_number']),
+                          'tx':x.get('transaction_hash')
+                      }
+                  elif topic==wd:
+                      active.pop((s24(w[0]),w[1],w[2]),None)
+                  elif topic==sl:
+                      active.pop((s24(w[2]),w[3],w[4]),None)
+              params=obj.get('next_page_params')
+              if not params: break
+              if pages>300: raise RuntimeError('unexpected Blockscout pagination depth')
+
+          live_count=call_int(FARM,'getPositionsCount()(uint256)')
+          print('INDEXED_ACTIVE_COUNT',len(active),'LIVE_POSITIONS_COUNT',live_count,'PAGES',pages)
+          if len(active)!=live_count:
+              raise RuntimeError(f'active reconstruction mismatch: indexed={len(active)} live={live_count}')
+
+          reward=call(FARM,'REWARD_TOKEN()(address)')
+          provider=call(FARM,'REWARDS_PROVIDER()(address)')
+          campaign=call_int(FARM,'CAMPAIGN_ID()(uint256)')
+          reward_balance=call_int(reward,'balanceOf(address)(uint256)',FARM)
+          provider_pending=call_int(provider,'pendingReward(uint256,address)(uint256)',campaign,FARM)
+          available=reward_balance+provider_pending
+
+          total_pending=0
+          stale_pending=0
+          active_pending=0
+          stale_count=0
+          rows=[]
+          for (tick,ver,idx),meta in sorted(active.items()):
+              current_ver=call_int(PROTOCOL,'getTickVersion(int24)(uint256)',tick)
+              pending=call_int(FARM,'pendingRewards(int24,uint256,uint256)(uint256)',tick,ver,idx)
+              liquidated=current_ver!=ver
+              total_pending += pending
+              if liquidated:
+                  stale_count += 1
+                  stale_pending += pending
+              else:
+                  active_pending += pending
+              rows.append((liquidated,pending,tick,ver,idx,current_ver,meta['owner'],meta['depositBlock']))
+
+          print('POSITIONS_BEGIN')
+          for liq,p,tick,ver,idx,cur,owner,db in sorted(rows, key=lambda r:r[1], reverse=True):
+              print('POSITION',
+                    f'tick={tick}',f'storedVersion={ver}',f'currentVersion={cur}',f'index={idx}',
+                    f'liquidated={str(liq).lower()}',f'pending={p}',f'owner={owner}',f'depositBlock={db}')
+          print('POSITIONS_END')
+
+          surplus=available-total_pending
+          coverage_ppm=(available*1_000_000//total_pending) if total_pending else 0
+          print('REWARD_TOKEN',reward)
+          print('REWARDS_PROVIDER',provider)
+          print('CAMPAIGN_ID',campaign)
+          print('REWARD_BALANCE',reward_balance)
+          print('PROVIDER_PENDING',provider_pending)
+          print('AVAILABLE_AFTER_HARVEST',available)
+          print('TOTAL_PENDING_LIABILITY',total_pending)
+          print('ACTIVE_PENDING_LIABILITY',active_pending)
+          print('STALE_PENDING_LIABILITY',stale_pending)
+          print('STALE_COUNT',stale_count)
+          print('SURPLUS_AVAILABLE_MINUS_LIABILITY',surplus)
+          print('COVERAGE_PPM',coverage_ppm)
+          print('SOLVENT',available>=total_pending)
+          print('LIABILITY_EQUALS_ACTIVE_PLUS_STALE',total_pending==active_pending+stale_pending)
+
+          # Human-readable 18-decimal summaries for easy triage.
+          def d18(x):
+              sign='-' if x<0 else ''
+              x=abs(x)
+              return f'{sign}{x//10**18}.{x%10**18:018d}'
+          print('HUMAN_REWARD_BALANCE',d18(reward_balance))
+          print('HUMAN_PROVIDER_PENDING',d18(provider_pending))
+          print('HUMAN_TOTAL_PENDING',d18(total_pending))
+          print('HUMAN_ACTIVE_PENDING',d18(active_pending))
+          print('HUMAN_STALE_PENDING',d18(stale_pending))
+          print('HUMAN_SURPLUS',d18(surplus))
+          PY
