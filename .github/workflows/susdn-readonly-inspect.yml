@@ -1,0 +1,44 @@
+name: USDN sUSDN read-only configuration inspect
+
+on:
+  push:
+    branches:
+      - security/usdn-dip-rewards-deep-scan
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+      - name: Read sUSDN proxy and vault configuration
+        env:
+          RPC_URL: https://ethereum-rpc.publicnode.com
+          SUSDN: '0xF67e2dC041b8A3c39d066037d29f500757b1e886'
+        run: |
+          set -u
+          echo '=== block ==='
+          cast block-number --rpc-url "$RPC_URL"
+          echo '=== EIP1967 implementation slot ==='
+          cast storage "$SUSDN" 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc --rpc-url "$RPC_URL"
+          echo '=== ERC20 ==='
+          cast call "$SUSDN" 'name()(string)' --rpc-url "$RPC_URL" || true
+          cast call "$SUSDN" 'symbol()(string)' --rpc-url "$RPC_URL" || true
+          cast call "$SUSDN" 'totalSupply()(uint256)' --rpc-url "$RPC_URL" || true
+          echo '=== Enzyme VaultLib getters ==='
+          for SIG in \
+            'getAccessor()(address)' \
+            'getCreator()(address)' \
+            'getOwner()(address)' \
+            'getNominatedOwner()(address)' \
+            'getTrackedAssets()(address[])' \
+            'getActiveExternalPositions()(address[])' \
+            'getVaultLib()(address)'; do
+            echo "-- $SIG"
+            cast call "$SUSDN" "$SIG" --rpc-url "$RPC_URL" || true
+          done
