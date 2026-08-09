@@ -12,7 +12,7 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
-      - name: Run exact-upstream 25x / 2bp economic control
+      - name: Run exact-upstream 24.6x / 2bp / current-Lido-APR control
         shell: bash
         run: |
           set -euo pipefail
@@ -34,8 +34,12 @@ jobs:
 
           contract TestWstEthTimestampSkewMaxLeverage is UsdnProtocolBaseFixture {
               uint128 private constant POSITION_AMOUNT = 1 ether;
-              uint256 private constant LIVE_MAX_LEVERAGE = 25_000 ether; // leverage has 21 decimals: 25e21
+              uint256 private constant LIVE_MAX_LEVERAGE = 25_000 ether; // 25x, 21-decimal leverage scale
               uint16 private constant LIVE_POSITION_FEE_BPS = 2;
+              // Official Lido API /v1/protocol/steth/apr/last returned 2.202% at 2026-08-09 12:21:47 UTC.
+              // Normalize that APR to a 24h share-rate move: 2.202% / 365 = 0.60328767 bp.
+              uint256 private constant LIDO_APR_NUMERATOR = 2202;
+              uint256 private constant LIDO_DAILY_DENOMINATOR = 36_500_000;
 
               struct Result {
                   uint256 payout;
@@ -60,8 +64,8 @@ jobs:
                   protocol.setPositionFeeBps(LIVE_POSITION_FEE_BPS);
                   vm.stopPrank();
 
-                  // 1958/2000 is below the live 2% safety-margin ceiling (1960), but implies leverage above 25x.
-                  // Upstream code should therefore enter its max-leverage clamp instead of rejecting on safety margin.
+                  // Below the live 2% safety-margin ceiling, but asks for leverage above 25x;
+                  // upstream validation clamps it to the configured maximum (actual tick-rounded ~24.611x).
                   posId = setUpUserPositionInLong(
                       OpenParams({
                           user: address(this),
@@ -94,7 +98,7 @@ jobs:
                   r.pythTimestamp = pyth.lastPublishTime();
               }
 
-              function test_live25xSameHistoricalEthPricePostRebasePaysMoreAndLeavesVaultLess() public {
+              function test_currentLidoAprEquivalentPostSettlementRebaseTransfersVaultValue() public {
                   uint256 rateBefore = wstETH.stEthPerToken();
 
                   protocol.initiateClosePosition(
@@ -116,29 +120,33 @@ jobs:
 
                   assertTrue(vm.revertToState(snap), "snapshot revert failed");
 
-                  uint256 rateAfter = rateBefore + rateBefore / 10_000;
+                  // Same pending close and same historical Pyth observation; only execution-time Lido rate changes.
+                  uint256 rateDelta = rateBefore * LIDO_APR_NUMERATOR / LIDO_DAILY_DENOMINATOR;
+                  uint256 rateAfter = rateBefore + rateDelta;
                   vm.mockCall(address(wstETH), abi.encodeWithSignature("stEthPerToken()"), abi.encode(rateAfter));
                   Result memory skew = _validate(fee);
 
                   assertEq(skew.pythTimestamp, control.pythTimestamp, "historical ETH report timestamp changed");
-                  assertGt(skew.payout, control.payout, "post-T+24 rate did not increase close payout");
-                  assertLt(skew.vault, control.vault, "post-T+24 rate did not reduce vault-side value");
+                  assertGt(skew.payout, control.payout, "post-T+24 Lido rate did not increase close payout");
+                  assertLt(skew.vault, control.vault, "post-T+24 Lido rate did not reduce vault-side value");
 
                   emit log_named_uint("position_amount", POSITION_AMOUNT);
                   emit log_named_uint("position_total_expo", totalExpo);
                   emit log_named_uint("realized_leverage_x1e18", uint256(totalExpo) * 1 ether / POSITION_AMOUNT);
                   emit log_named_uint("position_fee_bps", protocol.getPositionFeeBps());
+                  emit log_named_uint("lido_latest_apr_x1000", 2202);
                   emit log_named_uint("pyth_timestamp_both_runs", control.pythTimestamp);
                   emit log_named_uint("rate_before", rateBefore);
+                  emit log_named_uint("rate_delta", rateDelta);
                   emit log_named_uint("rate_after", rateAfter);
                   emit log_named_uint("payout_control", control.payout);
                   emit log_named_uint("payout_skew", skew.payout);
                   emit log_named_uint("payout_delta", skew.payout - control.payout);
-                  emit log_named_uint("payout_delta_bps_of_collateral", (skew.payout - control.payout) * 10_000 / POSITION_AMOUNT);
+                  emit log_named_uint("payout_delta_bps_x1e6", (skew.payout - control.payout) * 10_000_000_000 / POSITION_AMOUNT);
                   emit log_named_uint("vault_control", control.vault);
                   emit log_named_uint("vault_skew", skew.vault);
                   emit log_named_uint("vault_value_lost", control.vault - skew.vault);
-                  emit log_named_uint("oracle_validation_fee_wei", fee);
+                  emit log_named_uint("vault_loss_bps_x1e6", (control.vault - skew.vault) * 10_000_000_000 / POSITION_AMOUNT);
               }
           }
           SOL
