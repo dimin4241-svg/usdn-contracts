@@ -1,0 +1,38 @@
+name: USDN Router deployed source inspect
+
+on:
+  push:
+    branches:
+      - security/usdn-dip-rewards-deep-scan
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch critical verified Router sources
+        env:
+          ADDRESS: '0x49f66b1616865b2a59caecb8352bbf2ac80983e1'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, urllib.request, os
+          addr=os.environ['ADDRESS']
+          url=f'https://eth.blockscout.com/api/?module=contract&action=getsourcecode&address={addr}'
+          req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0 USDN-security-readonly'})
+          with urllib.request.urlopen(req,timeout=60) as r:
+              out=json.load(r)
+          item=out['result'][0]
+          print('ContractName',item.get('ContractName'))
+          raw=item['SourceCode']
+          txt=raw[1:-1] if raw.startswith('{{') and raw.endswith('}}') else raw
+          obj=json.loads(txt)
+          keys=('Dispatcher.sol','LockAndMap.sol','PaymentLib.sol','UsdnProtocolRouterLib.sol','UsdnProtocolRouter.sol','Sweep.sol','TransientStorageLib.sol','UniversalRouter.sol')
+          for path,entry in obj.get('sources',{}).items():
+              if path.endswith(keys):
+                  print('\n===== SOURCE',path,'=====')
+                  print(entry.get('content',''))
+          PY
