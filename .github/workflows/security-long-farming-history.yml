@@ -24,28 +24,21 @@ jobs:
           set -euo pipefail
           export RPC_URL FARM PROTOCOL FROM_BLOCK
           python3 - <<'PY'
-          import json, os, urllib.request, time, subprocess
+          import json, os, time, subprocess
           RPC=os.environ['RPC_URL']; start=int(os.environ['FROM_BLOCK'])
 
           def rpc(method, params):
-              data=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode()
+              cmd=['cast','rpc','--rpc-url',RPC,method] + [json.dumps(p,separators=(',',':')) for p in params]
               last=None
               for attempt in range(8):
                   try:
-                      req=urllib.request.Request(RPC,data=data,headers={
-                          'Content-Type':'application/json',
-                          'User-Agent':'curl/8.0',
-                          'Accept':'application/json'
-                      })
-                      with urllib.request.urlopen(req,timeout=45) as r: out=json.load(r)
-                      if 'error' in out: raise RuntimeError(out['error'])
-                      return out['result']
+                      out=subprocess.check_output(cmd,text=True,stderr=subprocess.STDOUT,timeout=60)
+                      return json.loads(out)
                   except Exception as e:
                       last=e; time.sleep(min(5,0.5*(attempt+1)))
               raise last
 
-          def keccak(sig):
-              return subprocess.check_output(['cast','keccak',sig], text=True).strip().lower()
+          def keccak(sig): return subprocess.check_output(['cast','keccak',sig],text=True).strip().lower()
           dep=keccak('Deposit(address,int24,uint256,uint256)')
           wd=keccak('Withdraw(address,int24,uint256,uint256)')
           slash=keccak('Slash(address,uint256,uint256,int24,uint256,uint256)')
@@ -53,9 +46,10 @@ jobs:
           wanted={dep:'Deposit',wd:'Withdraw',slash:'Slash',harvest:'Harvest'}
           end=int(rpc('eth_blockNumber',[]),16)
           logs=[]
-          for a in range(start,end+1,20000):
-              b=min(a+19999,end)
-              part=rpc('eth_getLogs',[{'address':os.environ['FARM'],'fromBlock':hex(a),'toBlock':hex(b)}])
+          for a in range(start,end+1,10000):
+              b=min(a+9999,end)
+              filt={'address':os.environ['FARM'],'fromBlock':hex(a),'toBlock':hex(b)}
+              part=rpc('eth_getLogs',[filt])
               logs.extend(x for x in part if x.get('topics') and x['topics'][0].lower() in wanted)
           logs.sort(key=lambda x:(int(x['blockNumber'],16),int(x['transactionIndex'],16),int(x['logIndex'],16)))
 
@@ -75,9 +69,7 @@ jobs:
               kind=wanted[x['topics'][0].lower()]; counts[kind]+=1; block=int(x['blockNumber'],16)
               if kind=='Deposit':
                   p=pos(x,kind)
-                  if first_dep is None:
-                      first_dep=block
-                      zero_start=block  # pre-deployment/first-user interval is not treated as an exploitable empty cycle
+                  if first_dep is None: first_dep=block
                   if p in active: mismatches.append(('duplicate_deposit',block,p))
                   if count==0 and zero_start is not None and block>zero_start:
                       zero_intervals.append((zero_start,block-1,block-zero_start))
@@ -110,6 +102,6 @@ jobs:
           echo '--- live tick-version check ---'
           while IFS=$'\t' read -r tick ver idx; do
             cur=$(cast call "$PROTOCOL" 'getTickVersion(int24)(uint256)' "$tick" --rpc-url "$RPC_URL")
-            info=$(cast call "$FARM" 'getPositionInfo(int24,uint256,uint256)((address,int24,uint256,uint256,uint256,uint128))' "$tick" "$ver" "$idx" --rpc-url "$RPC_URL" 2>/dev/null || true)
+            info=$(cast call "$FARM" 'getPositionInfo(int24,uint256,uint256)((address,uint128,uint256,uint256))' "$tick" "$ver" "$idx" --rpc-url "$RPC_URL" 2>/dev/null || true)
             echo "ACTIVE_POSITION tick=$tick storedVersion=$ver currentVersion=$cur index=$idx info=$info"
           done < /tmp/active.tsv
