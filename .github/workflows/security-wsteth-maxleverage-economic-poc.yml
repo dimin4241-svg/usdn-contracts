@@ -12,7 +12,7 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
-      - name: Run exact-upstream 24.6x / 2bp / current-Lido-APR control
+      - name: Run exact-upstream flat-price 24.6x / 2bp / current-Lido-APR control
         shell: bash
         run: |
           set -euo pipefail
@@ -37,7 +37,7 @@ jobs:
               uint256 private constant LIVE_MAX_LEVERAGE = 25_000 ether; // 25x, 21-decimal leverage scale
               uint16 private constant LIVE_POSITION_FEE_BPS = 2;
               // Official Lido API /v1/protocol/steth/apr/last returned 2.202% at 2026-08-09 12:21:47 UTC.
-              // Normalize that APR to a 24h share-rate move: 2.202% / 365 = 0.60328767 bp.
+              // Normalize to a 24h share-rate move: 2.202% / 365 = 0.60328767 bp.
               uint256 private constant LIDO_APR_NUMERATOR = 2202;
               uint256 private constant LIDO_DAILY_DENOMINATOR = 36_500_000;
 
@@ -64,8 +64,7 @@ jobs:
                   protocol.setPositionFeeBps(LIVE_POSITION_FEE_BPS);
                   vm.stopPrank();
 
-                  // Below the live 2% safety-margin ceiling, but asks for leverage above 25x;
-                  // upstream validation clamps it to the configured maximum (actual tick-rounded ~24.611x).
+                  // Below the 2% safety-margin ceiling but above 25x requested leverage; upstream clamps to ~24.611x.
                   posId = setUpUserPositionInLong(
                       OpenParams({
                           user: address(this),
@@ -98,7 +97,10 @@ jobs:
                   r.pythTimestamp = pyth.lastPublishTime();
               }
 
-              function test_currentLidoAprEquivalentPostSettlementRebaseTransfersVaultValue() public {
+              function test_flatEthPricePostSettlementRebaseTransfersVaultValue() public {
+                  // Remove the previous test's 2000 -> 2300 background PnL: make ETH/USD 2000 * rate 1.0 = wstETH/USD 2000.
+                  // The long was opened at 2000, and the control initiate+validate composite price is also exactly 2000.
+                  vm.mockCall(address(wstETH), abi.encodeWithSignature("stEthPerToken()"), abi.encode(1 ether));
                   uint256 rateBefore = wstETH.stEthPerToken();
 
                   protocol.initiateClosePosition(
@@ -120,7 +122,8 @@ jobs:
 
                   assertTrue(vm.revertToState(snap), "snapshot revert failed");
 
-                  // Same pending close and same historical Pyth observation; only execution-time Lido rate changes.
+                  // Same pending close, same Pyth ETH/USD observation and same settlement timestamp.
+                  // Only a post-T+24 Lido conversion-rate update is visible at execution time.
                   uint256 rateDelta = rateBefore * LIDO_APR_NUMERATOR / LIDO_DAILY_DENOMINATOR;
                   uint256 rateAfter = rateBefore + rateDelta;
                   vm.mockCall(address(wstETH), abi.encodeWithSignature("stEthPerToken()"), abi.encode(rateAfter));
