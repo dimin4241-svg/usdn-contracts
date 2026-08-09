@@ -43,8 +43,9 @@ jobs:
                   return json.load(r)
 
           tx = get_json(f'{base}/transactions/{creation_tx}')
-          deployment = int(tx['block']) if isinstance(tx['block'], int) else int(tx['block'], 0)
+          deployment = int(tx['block_number'])
           print('deploymentBlock', deployment)
+          print('creationTimestamp', tx.get('timestamp'))
           print('creationTx', creation_tx)
 
           logs = []
