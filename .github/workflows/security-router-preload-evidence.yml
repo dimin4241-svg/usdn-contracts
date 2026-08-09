@@ -1,0 +1,45 @@
+name: USDN Router preload compact evidence
+
+on:
+  push:
+    branches:
+      - security/usdn-router-softfail-sweep
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Clone exact deployed Router snapshot
+        run: |
+          set -euo pipefail
+          git clone https://github.com/SmarDex-Ecosystem/universal-router.git /tmp/router
+          cd /tmp/router
+          git checkout 2b9465ba87c23654c2eacce2088f5794ea08a006
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          npm ci
+          forge soldeer install
+
+      - name: Run compact live-fork boundary proof
+        env:
+          FOUNDRY_PROFILE: default
+          MAINNET_RPC_URL: 'https://ethereum-rpc.publicnode.com'
+        run: |
+          set -euo pipefail
+          cd /tmp/router
+          rm -rf test
+          mkdir -p test
+          cp "$GITHUB_WORKSPACE/security/RouterMainnetPreloadGriefPoC.t.sol" test/RouterMainnetPreloadGriefPoC.t.sol
+          forge test --match-test test_minimalRecoverablePreloadRevertsOfficialRoute -vv 2>&1 | tee /tmp/evidence.log
+          echo '--- COMPACT EVIDENCE ---'
+          grep 'EVIDENCE_' /tmp/evidence.log
