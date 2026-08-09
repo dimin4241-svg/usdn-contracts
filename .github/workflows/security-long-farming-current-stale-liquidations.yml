@@ -1,0 +1,70 @@
+name: USDN LongFarming current stale liquidation correlation
+
+on:
+  push:
+    branches: [security/susdn-live-config]
+  workflow_dispatch:
+
+jobs:
+  correlate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Find LiquidatedTick for current stale positions
+        env:
+          BLOCKSCOUT: https://eth.blockscout.com/api
+          PROTOCOL: '0x656cb8c6d154aad29d8771384089be5b5141f01a'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export BLOCKSCOUT PROTOCOL
+          python3 - <<'PY'
+          import json, os, subprocess, time
+          from urllib.parse import urlencode
+
+          BASE=os.environ['BLOCKSCOUT']; P=os.environ['PROTOCOL']
+          LIQ=subprocess.check_output(['cast','keccak','LiquidatedTick(int24,uint256,uint256,uint256,int256)'],text=True).strip().lower()
+          def get(url):
+              for i in range(7):
+                  try:
+                      out=subprocess.check_output(['curl','-fsS','--retry','2','--max-time','30','-H','accept: application/json',url],text=True)
+                      return json.loads(out)
+                  except Exception:
+                      if i==6: raise
+                      time.sleep(.5*(i+1))
+          def logs(a,b):
+              q=urlencode({'module':'logs','action':'getLogs','fromBlock':a,'toBlock':b,'address':P,'topic0':LIQ})
+              r=get(BASE+'?'+q).get('result',[])
+              return [] if isinstance(r,str) else r
+          def s24(t):
+              v=int(t,16)&((1<<24)-1); return v-(1<<24) if v&(1<<23) else v
+
+          # tick, stale version, current pending SDEX-wei
+          samples=[
+              (74200,0,1837503818724216647333900),
+              (79500,2,498509200987667827752255),
+              (83100,0,1134542367165033145917196),
+          ]
+          deployment=21681344
+          head=25730000
+          for tick,ver,pending in samples:
+              print('STALE_BEGIN tick',tick,'version',ver,'pending',pending)
+              found=[]
+              # Scan complete relevant history in 50k-block chunks. LiquidatedTick volume is low enough to avoid caps.
+              for a in range(deployment,head+1,50000):
+                  b=min(a+49999,head)
+                  rr=logs(a,b)
+                  for x in rr:
+                      ts=x.get('topics',[])
+                      if len(ts)>=3 and s24(ts[1])==tick and int(ts[2],16)==ver:
+                          found.append(x)
+              found.sort(key=lambda x:int(x['blockNumber'],16))
+              if not found:
+                  print('LIQ_NOT_FOUND')
+              else:
+                  for x in found:
+                      print('LIQ block',int(x['blockNumber'],16),'tx',x.get('transactionHash'),'tick',s24(x['topics'][1]),'oldVersion',int(x['topics'][2],16))
+              print('STALE_END')
+          PY
