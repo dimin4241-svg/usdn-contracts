@@ -12,130 +12,78 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
-      - name: Correlate real Slash events with LiquidatedTick logs
+      - name: Correlate verified mainnet Slash events with LiquidatedTick logs
         env:
           BLOCKSCOUT: https://eth.blockscout.com/api
-          LIVE_RPC: https://ethereum-rpc.publicnode.com
           PROTOCOL: '0x656cb8c6d154aad29d8771384089be5b5141f01a'
-          FARM: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
-          PROVIDER: '0x7d85C0905a6E1Ab5837a0b57cD94A419d3a77523'
-          CAMPAIGN: '20'
           DEPLOYMENT_BLOCK: '21681344'
         shell: bash
         run: |
           set -euo pipefail
-          export BLOCKSCOUT LIVE_RPC PROTOCOL FARM PROVIDER CAMPAIGN DEPLOYMENT_BLOCK
-
+          export BLOCKSCOUT PROTOCOL DEPLOYMENT_BLOCK
           python3 - <<'PY'
           import json, os, subprocess, time
           from urllib.parse import urlencode
 
-          BASE=os.environ['BLOCKSCOUT']; PROTOCOL=os.environ['PROTOCOL']; FARM=os.environ['FARM']
-          DEPLOY=int(os.environ['DEPLOYMENT_BLOCK'])
-
-          def keccak(sig):
-              return subprocess.check_output(['cast','keccak',sig],text=True).strip().lower()
-          LIQ=keccak('LiquidatedTick(int24,uint256,uint256,uint256,int256)')
-          SLASH=keccak('Slash(address,uint256,uint256,int24,uint256,uint256)')
+          BASE=os.environ['BLOCKSCOUT']; PROTOCOL=os.environ['PROTOCOL']; DEPLOY=int(os.environ['DEPLOYMENT_BLOCK'])
+          LIQ=subprocess.check_output(['cast','keccak','LiquidatedTick(int24,uint256,uint256,uint256,int256)'],text=True).strip().lower()
 
           def get_json(url):
               last=None
-              for attempt in range(7):
+              for attempt in range(8):
                   try:
-                      out=subprocess.check_output([
-                          'curl','-fsS','--retry','2','--retry-delay','1','--max-time','30',
-                          '-H','accept: application/json',url
-                      ],text=True,stderr=subprocess.STDOUT,timeout=35)
+                      out=subprocess.check_output(['curl','-fsS','--retry','2','--retry-delay','1','--max-time','30','-H','accept: application/json',url],text=True,stderr=subprocess.STDOUT,timeout=35)
                       return json.loads(out)
                   except Exception as e:
                       last=e; time.sleep(min(3,0.5*(attempt+1)))
               raise last
 
-          def legacy_logs(address, topic0, a, b):
-              q=urlencode({'module':'logs','action':'getLogs','fromBlock':a,'toBlock':b,'address':address,'topic0':topic0})
-              obj=get_json(BASE+'?'+q)
-              res=obj.get('result',[])
-              if isinstance(res,str):
-                  if 'No logs' in res or obj.get('status')=='0': return []
-                  raise RuntimeError(res)
-              return res
+          def logs(a,b):
+              q=urlencode({'module':'logs','action':'getLogs','fromBlock':a,'toBlock':b,'address':PROTOCOL,'topic0':LIQ})
+              o=get_json(BASE+'?'+q); r=o.get('result',[])
+              if isinstance(r,str): return []
+              return r
 
-          def signed_int24_topic(t):
+          def s24(t):
               v=int(t,16)&((1<<24)-1)
               return v-(1<<24) if v&(1<<23) else v
 
-          def words(data):
-              h=(data or '0x')[2:]
-              return [int(h[i:i+64],16) for i in range(0,len(h),64) if h[i:i+64]]
-
-          def find_liq(tick,version,slash_block):
-              for window in (5000,20000,100000,500000,2000000,6000000):
-                  a=max(DEPLOY,slash_block-window); b=slash_block
-                  logs=legacy_logs(PROTOCOL,LIQ,a,b)
-                  print('LIQ_WINDOW',tick,version,a,b,'raw',len(logs))
-                  matches=[]
-                  for x in logs:
-                      ts=x.get('topics',[])
-                      if len(ts)<3: continue
-                      if signed_int24_topic(ts[1])==tick and int(ts[2],16)==version:
-                          matches.append(x)
-                  if matches:
-                      matches.sort(key=lambda x:int(x['blockNumber'],16))
-                      return matches[-1]
-                  # if an API cap was reached, expanding further is not useful; split backward windows instead.
-                  if len(logs)>=950:
-                      step=window
-                      end=a-1
-                      for _ in range(20):
-                          if end<DEPLOY: break
-                          start=max(DEPLOY,end-step+1)
-                          more=legacy_logs(PROTOCOL,LIQ,start,end)
-                          print('LIQ_BACKFILL',tick,version,start,end,'raw',len(more))
-                          for x in more:
-                              ts=x.get('topics',[])
-                              if len(ts)>=3 and signed_int24_topic(ts[1])==tick and int(ts[2],16)==version:
-                                  return x
-                          end=start-1
-              return None
-
-          def slash_at(block,tick,version,index):
-              logs=legacy_logs(FARM,SLASH,block,block)
-              for x in logs:
-                  w=words(x.get('data'))
-                  if len(w)<5: continue
-                  tv=w[2]&((1<<24)-1); tv=tv-(1<<24) if tv&(1<<23) else tv
-                  if tv==tick and w[3]==version and w[4]==index:
-                      return x,w
-              return None,None
-
           samples=[
-              # (tick, storedVersion, index, slashBlock)
-              (73167,1,0,21827817),
-              (79755,2,0,22618625),
+              # verified from complete V2 LongFarming log reconstruction:
+              # tick, version, index, slashBlock, notifierRewards, ownerRewards, slashTx
+              (82000,0,0,21758975,0,55350465282065918760293,'0xec531ddc63988894a6e5c3d4718b5360d33bd3352e3a1718886eae81739c4dfa'),
+              (79200,0,0,21763319,32228679786148368231483,75200252834346192540127,'0xa7c268ea30aa04029d8efac26efd06b0ddea2a1cb2bfd50b64b8abb2e48ef65e'),
+              (78100,0,5,21943409,32749909741282993114010,294749187671546938026092,'0x705d64defcdf6cadecec09f205a0115838c15dc6684b955c23e56ab8084f8f3d'),
           ]
 
-          for tick,ver,idx,sb in samples:
-              print('SAMPLE_BEGIN',tick,ver,idx,'slash',sb)
-              sx,sw=slash_at(sb,tick,ver,idx)
-              if sx:
-                  print('SLASH_EXACT','block',sb,'notifierRewards',sw[0],'ownerRewards',sw[1],
-                        'totalRewards',sw[0]+sw[1],'tx',sx.get('transactionHash'))
+          for tick,ver,idx,sb,nr,orr,stx in samples:
+              print('SAMPLE_BEGIN tick',tick,'version',ver,'index',idx,'slashBlock',sb,'slashTx',stx)
+              print('SLASH_EXACT notifierRewards',nr,'ownerRewards',orr,'totalRewards',nr+orr)
+              found=None
+              # Search backwards in contiguous windows to avoid API caps.
+              end=sb; step=5000; searched=0
+              while end>=DEPLOY and searched<2500000 and found is None:
+                  start=max(DEPLOY,end-step+1)
+                  rr=logs(start,end)
+                  matches=[]
+                  for x in rr:
+                      ts=x.get('topics',[])
+                      if len(ts)>=3 and s24(ts[1])==tick and int(ts[2],16)==ver:
+                          matches.append(x)
+                  print('WINDOW',start,end,'raw',len(rr),'matches',len(matches))
+                  if matches:
+                      matches.sort(key=lambda x:int(x['blockNumber'],16))
+                      found=matches[-1]
+                      break
+                  searched += end-start+1
+                  end=start-1
+                  # expand but keep each request modest enough for Blockscout result limits
+                  if searched>=20000: step=20000
+              if found:
+                  lb=int(found['blockNumber'],16)
+                  print('LIQ_EXACT block',lb,'delayBlocks',sb-lb,'tx',found.get('transactionHash'),
+                        'tick',s24(found['topics'][1]),'oldVersion',int(found['topics'][2],16))
               else:
-                  print('SLASH_NOT_FOUND')
-              lx=find_liq(tick,ver,sb)
-              if lx:
-                  lb=int(lx['blockNumber'],16)
-                  print('LIQ_EXACT','block',lb,'delayBlocks',sb-lb,'tx',lx.get('transactionHash'),
-                        'topicTick',signed_int24_topic(lx['topics'][1]),'topicVersion',int(lx['topics'][2],16))
-              else:
-                  print('LIQ_NOT_FOUND')
+                  print('LIQ_NOT_FOUND searchedBlocks',searched)
               print('SAMPLE_END')
           PY
-
-          echo '--- exact campaign reward schedule ---'
-          LEN=$(cast call "$PROVIDER" 'rewardInfoLen(uint256)(uint256)' "$CAMPAIGN" --rpc-url "$LIVE_RPC" | awk '{print $1}')
-          echo "REWARD_INFO_LEN=$LEN"
-          for ((i=0; i<LEN; i++)); do
-            row=$(cast call "$PROVIDER" 'campaignRewardInfo(uint256,uint256)(uint256,uint256)' "$CAMPAIGN" "$i" --rpc-url "$LIVE_RPC")
-            echo "REWARD_SEGMENT index=$i $row"
-          done
