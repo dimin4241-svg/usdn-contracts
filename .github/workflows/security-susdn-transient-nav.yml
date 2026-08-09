@@ -1,0 +1,25 @@
+name: sUSDN transient NAV fork probe
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - security/usdn-susdn-enzyme
+    paths:
+      - test/security/SusdnTransientNav.t.sol
+      - .github/workflows/security-susdn-transient-nav.yml
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      RPC_URL: https://ethereum-rpc.publicnode.com
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Install dependencies
+        run: forge soldeer install
+      - name: Run fork probe
+        run: forge test --match-contract SusdnTransientNavTest -vvvv
