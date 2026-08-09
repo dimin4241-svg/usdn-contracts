@@ -13,90 +13,73 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
       - name: Fetch and decode real Router deposits
         env:
           RPC_URL: 'https://ethereum-rpc.publicnode.com'
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json, os, urllib.request
+          TXS=(
+            0x01c8ac6653e9b317083595fddb04dd9b87cad21053d1e73e7403ed6673b3f9d9
+            0x71ecb479e0d4147896db5374926fab547991b358697788990790295287d7441c
+            0x92b42a074a0e587b5eb31efd1cfba34ef8bc3c7b995612032eee19c412a62a07
+          )
+          : > /tmp/tx-inputs.txt
+          for h in "${TXS[@]}"; do
+            input=$(cast tx "$h" input --rpc-url "$RPC_URL")
+            block=$(cast tx "$h" blockNumber --rpc-url "$RPC_URL")
+            printf '%s %s %s\n' "$h" "$block" "$input" >> /tmp/tx-inputs.txt
+          done
 
-          RPC=os.environ['RPC_URL']
-          TXS=[
-            '0x01c8ac6653e9b317083595fddb04dd9b87cad21053d1e73e7403ed6673b3f9d9',
-            '0x71ecb479e0d4147896db5374926fab547991b358697788990790295287d7441c',
-            '0x92b42a074a0e587b5eb31efd1cfba34ef8bc3c7b995612032eee19c412a62a07',
-          ]
+          python3 - <<'PY'
           EXECUTE_SELECTOR='24856bc3'
           INITIATE_DEPOSIT=0x20
           CONTRACT_BALANCE=1<<255
 
-          def rpc(method, params):
-              payload=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode()
-              req=urllib.request.Request(RPC, data=payload, headers={'content-type':'application/json'})
-              with urllib.request.urlopen(req, timeout=30) as r:
-                  out=json.load(r)
-              if 'error' in out:
-                  raise RuntimeError(out['error'])
-              return out['result']
-
-          def u256(b, off):
-              return int.from_bytes(b[off:off+32], 'big')
-
-          def address_at(b, off):
-              return '0x'+b[off+12:off+32].hex()
-
+          def u256(b, off): return int.from_bytes(b[off:off+32], 'big')
+          def address_at(b, off): return '0x'+b[off+12:off+32].hex()
           def dyn_bytes_at(b, off):
-              n=u256(b, off)
+              n=u256(b,off)
               return b[off+32:off+32+n]
 
           def decode_execute(calldata):
               assert calldata[:4].hex()==EXECUTE_SELECTOR, calldata[:4].hex()
               body=calldata[4:]
-              commands_off=u256(body,0)
+              commands=dyn_bytes_at(body,u256(body,0))
               inputs_off=u256(body,32)
-              commands=dyn_bytes_at(body,commands_off)
               n=u256(body,inputs_off)
               head=inputs_off+32
               inputs=[]
               for i in range(n):
-                  rel=u256(body, head+32*i)
-                  inputs.append(dyn_bytes_at(body, head+rel))
-              return commands, inputs
+                  rel=u256(body,head+32*i)
+                  inputs.append(dyn_bytes_at(body,head+rel))
+              return commands,inputs
 
-          def decode_deposit_input(encoded):
-              tuple_base=u256(encoded,0)
-              p=tuple_base
-              payment=u256(encoded,p)
-              amount=u256(encoded,p+32)
-              shares_out_min=u256(encoded,p+64)
-              to=address_at(encoded,p+96)
-              validator=address_at(encoded,p+128)
-              deadline=u256(encoded,p+160)
-              current_price_data_rel=u256(encoded,p+192)
-              prev_actions_rel=u256(encoded,p+224)
-              eth_amount=u256(encoded,p+256)
+          def decode_deposit(encoded):
+              p=u256(encoded,0)
               return {
-                  'payment':payment,'amount':amount,'sharesOutMin':shares_out_min,
-                  'to':to,'validator':validator,'deadline':deadline,
-                  'currentPriceDataRel':current_price_data_rel,
-                  'previousActionsRel':prev_actions_rel,'ethAmount':eth_amount,
+                'payment':u256(encoded,p),
+                'amount':u256(encoded,p+32),
+                'sharesOutMin':u256(encoded,p+64),
+                'to':address_at(encoded,p+96),
+                'validator':address_at(encoded,p+128),
+                'deadline':u256(encoded,p+160),
+                'ethAmount':u256(encoded,p+256),
               }
 
-          for h in TXS:
-              tx=rpc('eth_getTransactionByHash',[h])
-              if tx is None:
-                  print('PROD_TX_NOT_FOUND',h)
-                  continue
-              calldata=bytes.fromhex(tx['input'][2:])
-              commands, inputs=decode_execute(calldata)
+          for line in open('/tmp/tx-inputs.txt'):
+              h,block_s,input_hex=line.strip().split()
+              calldata=bytes.fromhex(input_hex.removeprefix('0x'))
+              commands,inputs=decode_execute(calldata)
               print('PROD_TX',h)
-              print('PROD_BLOCK',int(tx['blockNumber'],16))
+              print('PROD_BLOCK',block_s)
               print('PROD_COMMANDS',' '.join(f'{x:02x}' for x in commands))
-              dep_indices=[i for i,c in enumerate(commands) if (c & 0x3f)==INITIATE_DEPOSIT]
-              print('PROD_INITIATE_DEPOSIT_INDICES',dep_indices)
-              for idx in dep_indices:
-                  d=decode_deposit_input(inputs[idx])
+              deps=[i for i,c in enumerate(commands) if (c & 0x3f)==INITIATE_DEPOSIT]
+              print('PROD_INITIATE_DEPOSIT_INDICES',deps)
+              for idx in deps:
+                  d=decode_deposit(inputs[idx])
                   print('PROD_DEPOSIT_INDEX',idx)
                   print('PROD_PAYMENT',d['payment'])
                   print('PROD_AMOUNT_WEI',d['amount'])
