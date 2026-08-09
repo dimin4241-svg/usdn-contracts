@@ -14,9 +14,8 @@ jobs:
           version: stable
       - name: Find exact liquidation blocks by archived tickVersion transition
         env:
-          RPC_URL: https://ethereum-rpc.publicnode.com
+          LIVE_RPC: https://ethereum-rpc.publicnode.com
           PROTOCOL: '0x656cb8c6d154aad29d8771384089be5b5141f01a'
-          FARM: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
           PROVIDER: '0x7d85C0905a6E1Ab5837a0b57cD94A419d3a77523'
           CAMPAIGN: '20'
           DEPLOYMENT_BLOCK: '21681344'
@@ -24,9 +23,26 @@ jobs:
         run: |
           set -euo pipefail
 
+          ARCHIVE_RPCS=(
+            'https://rpc.flashbots.net'
+            'https://eth.llamarpc.com'
+            'https://1rpc.io/eth'
+            'https://eth.drpc.org'
+            'https://ethereum.publicnode.com'
+          )
+
           version_at() {
-            local tick="$1" block="$2"
-            cast call "$PROTOCOL" 'getTickVersion(int24)(uint256)' "$tick" --block "$block" --rpc-url "$RPC_URL" | awk '{print $1}'
+            local tick="$1" block="$2" out rpc
+            for rpc in "${ARCHIVE_RPCS[@]}"; do
+              if out=$(cast call "$PROTOCOL" 'getTickVersion(int24)(uint256)' "$tick" --block "$block" --rpc-url "$rpc" 2>/dev/null | awk '{print $1}'); then
+                if [[ "$out" =~ ^[0-9]+$ ]]; then
+                  echo "$out"
+                  return 0
+                fi
+              fi
+            done
+            echo "no archive endpoint served tick=$tick block=$block" >&2
+            return 1
           }
 
           correlate() {
@@ -40,7 +56,6 @@ jobs:
               echo "NO_LIQUIDATION_BEFORE_SLASH"
               return 1
             fi
-            # Find first block where current tick version becomes greater than the farming position's stored version.
             while [ $((hi-lo)) -gt 1 ]; do
               local mid=$(((lo+hi)/2)) vmid
               vmid=$(version_at "$tick" "$mid")
@@ -50,20 +65,16 @@ jobs:
             before=$(version_at "$tick" $((hi-1)))
             after=$(version_at "$tick" "$hi")
             echo "LIQUIDATION_TRANSITION tick=$tick storedVersion=$stored liquidationBlock=$hi versionBefore=$before versionAfter=$after slashBlock=$slash delayBlocks=$((slash-hi))"
-            echo "--- Slash event at block $slash ---"
-            cast logs --address "$FARM" --from-block "$slash" --to-block "$slash" \
-              'Slash(address,uint256,uint256,int24,uint256,uint256)' --rpc-url "$RPC_URL" || true
             echo "SAMPLE_END"
           }
 
-          # Real mainnet Slash events reconstructed from LongFarming history.
           correlate 73167 1 21827817
           correlate 79755 2 22618625
 
           echo '--- campaign reward segments ---'
-          LEN=$(cast call "$PROVIDER" 'rewardInfoLen(uint256)(uint256)' "$CAMPAIGN" --rpc-url "$RPC_URL" | awk '{print $1}')
+          LEN=$(cast call "$PROVIDER" 'rewardInfoLen(uint256)(uint256)' "$CAMPAIGN" --rpc-url "$LIVE_RPC" | awk '{print $1}')
           echo "REWARD_INFO_LEN=$LEN"
           for ((i=0; i<LEN; i++)); do
-            row=$(cast call "$PROVIDER" 'campaignRewardInfo(uint256,uint256)(uint256,uint256)' "$CAMPAIGN" "$i" --rpc-url "$RPC_URL")
+            row=$(cast call "$PROVIDER" 'campaignRewardInfo(uint256,uint256)(uint256,uint256)' "$CAMPAIGN" "$i" --rpc-url "$LIVE_RPC")
             echo "REWARD_SEGMENT index=$i $row"
           done
