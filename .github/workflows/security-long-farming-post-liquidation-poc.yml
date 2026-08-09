@@ -16,10 +16,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --recursive https://github.com/SmarDex-Ecosystem/usdn-long-farming.git /tmp/usdn-long-farming
+          git clone https://github.com/SmarDex-Ecosystem/usdn-long-farming.git /tmp/usdn-long-farming
           cd /tmp/usdn-long-farming
           git checkout cd5f5e1f693c53a73d869a275cbf960ce9540c79
-          git submodule update --init --recursive
+          forge soldeer install
 
           cat > test/unit/UsdnLongFarming/PostLiquidationRewards.t.sol <<'SOL'
           // SPDX-License-Identifier: UNLICENSED
