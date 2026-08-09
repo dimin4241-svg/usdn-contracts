@@ -20,7 +20,9 @@ jobs:
         run: |
           set -euo pipefail
           block=$(cast block-number --rpc-url "$RPC_URL")
-          blockts=$(cast block "$block" timestamp --rpc-url "$RPC_URL")
+          blockjson=$(cast block "$block" --json --rpc-url "$RPC_URL")
+          blockts_hex=$(printf '%s' "$blockjson" | python3 -c 'import json,sys; print(json.load(sys.stdin)["timestamp"])')
+          blockts=$((blockts_hex))
           echo "FORMULA_BLOCK=$block FORMULA_BLOCK_TS=$blockts"
           echo "FEED_DECIMALS=$(cast call "$FEED" 'DECIMALS()(uint8)' --rpc-url "$RPC_URL")"
           echo "FEED_BASE_RATE=$(cast call "$FEED" 'baseRate()(uint256,uint256,uint256)' --rpc-url "$RPC_URL")"
