@@ -1,0 +1,53 @@
+name: USDN live hook probe
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - security/usdn-susdn-enzyme
+    paths:
+      - .github/workflows/security-usdn-live-hooks.yml
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      RPC_URL: "https://ethereum-rpc.publicnode.com"
+      USDN: "0xde17a000BA631c5d7c2Bd9FB692EFeA52D90DEE2"
+      PROTOCOL: "0x656cB8C6d154Aad29d8771384089be5B5141f01a"
+      AGG: "0xd5004C5D3017862839e83981b110f27EE7B36EAa"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Probe hook and feed
+        shell: bash
+        run: |
+          set -u
+          echo '=== USDN ==='
+          echo -n 'rebaseHandler='; cast call "$USDN" 'rebaseHandler()(address)' --rpc-url "$RPC_URL" || true
+          echo -n 'divisor='; cast call "$USDN" 'divisor()(uint256)' --rpc-url "$RPC_URL" || true
+          echo -n 'totalSupply='; cast call "$USDN" 'totalSupply()(uint256)' --rpc-url "$RPC_URL" || true
+          echo -n 'totalShares='; cast call "$USDN" 'totalShares()(uint256)' --rpc-url "$RPC_URL" || true
+          echo '=== PROTOCOL LIVE CONFIG ==='
+          echo -n 'oracleMiddleware='; cast call "$PROTOCOL" 'getOracleMiddleware()(address)' --rpc-url "$RPC_URL" || true
+          echo -n 'rebalancer='; cast call "$PROTOCOL" 'getRebalancer()(address)' --rpc-url "$RPC_URL" || true
+          echo -n 'liquidationRewardsManager='; cast call "$PROTOCOL" 'getLiquidationRewardsManager()(address)' --rpc-url "$RPC_URL" || true
+          echo -n 'usdnRebaseThreshold='; cast call "$PROTOCOL" 'getUsdnRebaseThreshold()(uint256)' --rpc-url "$RPC_URL" || true
+          echo -n 'targetUsdnPrice='; cast call "$PROTOCOL" 'getTargetUsdnPrice()(uint256)' --rpc-url "$RPC_URL" || true
+          echo '=== ENZYME USDN AGGREGATOR ==='
+          for sig in \
+            'decimals()(uint8)' \
+            'description()(string)' \
+            'version()(uint256)' \
+            'latestAnswer()(int256)' \
+            'latestTimestamp()(uint256)' \
+            'latestRound()(uint256)'; do
+              echo "AGG_CALL $sig"
+              cast call "$AGG" "$sig" --rpc-url "$RPC_URL" || true
+          done
+          echo -n 'latestRoundData='; cast call "$AGG" 'latestRoundData()(uint80,int256,uint256,uint256,uint80)' --rpc-url "$RPC_URL" || true
+          echo -n 'aggregator='; cast call "$AGG" 'aggregator()(address)' --rpc-url "$RPC_URL" || true
+          echo -n 'owner='; cast call "$AGG" 'owner()(address)' --rpc-url "$RPC_URL" || true
+          echo -n 'codehash='; cast codehash "$AGG" --rpc-url "$RPC_URL" || true
