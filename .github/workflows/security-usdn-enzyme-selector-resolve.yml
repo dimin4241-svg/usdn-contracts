@@ -1,0 +1,39 @@
+name: Resolve USDN Enzyme aggregator selectors
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [security/usdn-susdn-enzyme]
+    paths: [.github/workflows/security-usdn-enzyme-selector-resolve.yml]
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Resolve selectors
+        run: |
+          set +e
+          for s in 0x0918d214 0x1f68f20a 0x2e0f2625 0x2faa3a09 0x2fe54fc5 0x3ef10173 0xf211abcc 0x7aeabd99 0xfeaf968c; do
+            echo "SELECTOR=$s"
+            cast 4byte "$s"
+          done
+          echo '=== CANDIDATE SIGNATURES ==='
+          for sig in \
+            'getLastPrice()' \
+            'getLastUpdateTimestamp()' \
+            'usdnPrice(uint128)' \
+            'usdnPrice(uint128,uint128)' \
+            'getTargetUsdnPrice()' \
+            'getUsdnRebaseThreshold()' \
+            'getBalanceVault()' \
+            'getBalanceLong()' \
+            'getTotalExpo()' \
+            'getPriceFeedDecimals()' \
+            'getAssetDecimals()' \
+            'getOracleMiddleware()' \
+            'vaultAssetAvailableWithFunding(uint128,uint128)' \
+            'longAssetAvailableWithFunding(uint128,uint128)' \
+            'USDN_PROTOCOL()'; do
+            echo "$(cast sig "$sig") $sig"
+          done
