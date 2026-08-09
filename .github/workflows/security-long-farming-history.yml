@@ -13,100 +13,123 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
-      - name: Reconstruct LongFarming lifecycle and inspect stored positions
+      - name: Reconstruct LongFarming lifecycle from indexed logs
         env:
           FARM: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
           PROTOCOL: '0x656cb8c6d154aad29d8771384089be5b5141f01a'
-          FROM_BLOCK: '21600000'
+          PROVIDER: '0x7d85C0905a6E1Ab5837a0b57cD94A419d3a77523'
+          CAMPAIGN: '20'
+          RPC_URL: 'https://rpc.flashbots.net'
         shell: bash
         run: |
           set -euo pipefail
-          export FARM PROTOCOL FROM_BLOCK
+          export FARM PROTOCOL PROVIDER CAMPAIGN RPC_URL
           python3 - <<'PY'
-          import json, os, time, subprocess
+          import json, os, subprocess, time
+          from urllib.parse import urlencode
 
-          RPCS=[
-              'https://rpc.flashbots.net',
-              'https://eth.llamarpc.com',
-              'https://ethereum-rpc.publicnode.com',
-          ]
-          start=int(os.environ['FROM_BLOCK'])
+          BASE='https://eth.blockscout.com/api/v2'
+          FARM=os.environ['FARM']
 
-          def rpc(method, params):
-              payload=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params},separators=(',',':'))
-              errors=[]
-              for endpoint in RPCS:
-                  for attempt in range(2):
-                      try:
-                          out=subprocess.check_output([
-                              'curl','-fsS','--max-time','30','-H','content-type: application/json',
-                              '--data',payload,endpoint
-                          ],text=True,stderr=subprocess.STDOUT,timeout=35)
-                          obj=json.loads(out)
-                          if obj.get('error'):
-                              raise RuntimeError(obj['error'])
-                          return obj['result'], endpoint
-                      except Exception as e:
-                          errors.append(f'{endpoint}: {e}')
-                          time.sleep(0.3*(attempt+1))
-              raise RuntimeError(' | '.join(errors[-6:]))
+          def http_json(url):
+              last=None
+              for attempt in range(6):
+                  try:
+                      out=subprocess.check_output([
+                          'curl','-fsS','--retry','2','--retry-delay','1','--max-time','30',
+                          '-H','accept: application/json',url
+                      ],text=True,stderr=subprocess.STDOUT,timeout=35)
+                      return json.loads(out)
+                  except Exception as e:
+                      last=e; time.sleep(0.5*(attempt+1))
+              raise last
 
-          def keccak(sig): return subprocess.check_output(['cast','keccak',sig],text=True).strip().lower()
+          def keccak(sig):
+              return subprocess.check_output(['cast','keccak',sig],text=True).strip().lower()
+
+          # Establish the real deployment block so the constructor->first-deposit empty period is included.
+          addr=http_json(f'{BASE}/addresses/{FARM}')
+          creation_tx=addr.get('creation_tx_hash') or addr.get('creation_transaction_hash')
+          creation_block=None
+          if creation_tx:
+              tx=http_json(f'{BASE}/transactions/{creation_tx}')
+              creation_block=tx.get('block') or tx.get('block_number')
+              if isinstance(creation_block,str): creation_block=int(creation_block,0)
+          print('CREATION_TX',creation_tx)
+          print('CREATION_BLOCK',creation_block)
+
           dep=keccak('Deposit(address,int24,uint256,uint256)')
           wd=keccak('Withdraw(address,int24,uint256,uint256)')
           slash=keccak('Slash(address,uint256,uint256,int24,uint256,uint256)')
           harvest=keccak('Harvest(address,uint256,int24,uint256,uint256)')
           wanted={dep:'Deposit',wd:'Withdraw',slash:'Slash',harvest:'Harvest'}
-          end_hex, endpoint=rpc('eth_blockNumber',[])
-          end=int(end_hex,16)
-          print('HEAD_RPC',endpoint,'CURRENT_BLOCK',end)
 
-          logs=[]
-          chunk=2500
-          for a in range(start,end+1,chunk):
-              b=min(a+chunk-1,end)
-              part, used=rpc('eth_getLogs',[{'address':os.environ['FARM'],'fromBlock':hex(a),'toBlock':hex(b)}])
-              logs.extend(x for x in part if x.get('topics') and x['topics'][0].lower() in wanted)
-              if part:
-                  print('LOG_CHUNK',a,b,'RPC',used,'RAW',len(part))
-          logs.sort(key=lambda x:(int(x['blockNumber'],16),int(x['transactionIndex'],16),int(x['logIndex'],16)))
+          # Blockscout's address-log endpoint is cursor paginated and does not depend on archive RPC access.
+          logs=[]; params={}; pages=0
+          while True:
+              url=f'{BASE}/addresses/{FARM}/logs'
+              if params: url += '?' + urlencode(params)
+              obj=http_json(url); pages += 1
+              items=obj.get('items',[])
+              logs.extend(x for x in items if x.get('topics') and x['topics'][0].lower() in wanted)
+              nxt=obj.get('next_page_params')
+              if pages % 10 == 0 or not nxt:
+                  print('BLOCKSCOUT_PAGE',pages,'RAW_ITEMS',len(items),'MATCHED_TOTAL',len(logs),'NEXT',bool(nxt))
+              if not nxt: break
+              params=nxt
+              if pages > 500:
+                  raise RuntimeError('unexpectedly deep Blockscout pagination')
+
+          logs.sort(key=lambda x:(int(x['block_number']),int(x.get('index') or 0)))
 
           def words(data):
-              h=data[2:]; return [int(h[i:i+64],16) for i in range(0,len(h),64)]
+              h=(data or '0x')[2:]
+              return [int(h[i:i+64],16) for i in range(0,len(h),64) if h[i:i+64]]
           def s24(x):
-              v=x & ((1<<24)-1); return v-(1<<24) if v&(1<<23) else v
+              v=x & ((1<<24)-1)
+              return v-(1<<24) if v&(1<<23) else v
           def pos(x,kind):
               w=words(x['data'])
               if kind in ('Deposit','Withdraw'): return (s24(w[0]),w[1],w[2])
               if kind=='Slash': return (s24(w[2]),w[3],w[4])
               return (s24(w[1]),w[2],w[3])
 
-          active={}; count=0; zero_start=None; zero_intervals=[]; first_dep=None; mismatches=[]
-          counts={k:0 for k in wanted.values()}
-          lifecycle=[]
+          active={}; count=0; zero_start=creation_block; zero_intervals=[]; first_dep=None; mismatches=[]
+          counts={k:0 for k in wanted.values()}; slash_rows=[]
           for x in logs:
-              kind=wanted[x['topics'][0].lower()]; counts[kind]+=1; block=int(x['blockNumber'],16); p=pos(x,kind)
+              topic0=x['topics'][0].lower(); kind=wanted[topic0]; counts[kind]+=1
+              block=int(x['block_number']); p=pos(x,kind)
+              txh=x.get('transaction_hash')
               if kind=='Deposit':
                   if first_dep is None: first_dep=block
                   if p in active: mismatches.append(('duplicate_deposit',block,p))
                   if count==0 and zero_start is not None and block>zero_start:
-                      zero_intervals.append((zero_start,block-1,block-zero_start))
-                  active[p]={'block':block,'owner':'0x'+x['topics'][1][-40:],'tx':x['transactionHash']}
-                  count+=1; zero_start=None; lifecycle.append((block,'Deposit',p,count))
+                      zero_intervals.append((zero_start,block-1,block-zero_start,'before_deposit'))
+                  owner='0x'+x['topics'][1][-40:] if len(x['topics'])>1 and x['topics'][1] else None
+                  active[p]={'block':block,'owner':owner,'tx':txh}
+                  count+=1; zero_start=None
               elif kind in ('Withdraw','Slash'):
                   if p not in active: mismatches.append(('remove_missing',block,p,kind))
                   else: active.pop(p)
-                  count-=1; lifecycle.append((block,kind,p,count))
+                  count-=1
+                  if kind=='Slash':
+                      w=words(x['data']); notifier='0x'+x['topics'][1][-40:] if len(x['topics'])>1 and x['topics'][1] else None
+                      slash_rows.append((block,p,w[0],w[1],notifier,txh))
                   if count==0: zero_start=block
-          if count==0 and zero_start is not None: zero_intervals.append((zero_start,end,end-zero_start+1))
+
+          head=int(subprocess.check_output(['cast','block-number','--rpc-url',os.environ['RPC_URL']],text=True).strip())
+          if count==0 and zero_start is not None:
+              zero_intervals.append((zero_start,head,head-zero_start+1,'still_empty'))
 
           print('EVENT_COUNTS',counts)
           print('RECONSTRUCTED_COUNT',count)
           print('FIRST_DEPOSIT_BLOCK',first_dep)
           print('ZERO_INTERVALS_TOTAL',len(zero_intervals))
-          for z in zero_intervals:
-              print('ZERO_INTERVAL',*z,'OVERLAPS_NONZERO_EMISSIONS',int(z[0] <= 25056370))
+          for z in zero_intervals: print('ZERO_INTERVAL',*z)
+          print('SLASH_EVENTS_TOTAL',len(slash_rows))
+          for r in slash_rows: print('SLASH_EVENT',*r)
           if mismatches: print('MISMATCHES',mismatches)
+
           print('ACTIVE_BEGIN')
           with open('/tmp/active.tsv','w') as f:
               for (tick,ver,idx),m in sorted(active.items()):
@@ -115,11 +138,17 @@ jobs:
           print('ACTIVE_END')
           PY
 
-          RPC_URL=https://rpc.flashbots.net
-          echo '--- live tick-version / reward check ---'
+          echo '--- exact external reward schedule ---'
+          LEN=$(cast call "$PROVIDER" 'rewardInfoLen(uint256)(uint256)' "$CAMPAIGN" --rpc-url "$RPC_URL" | awk '{print $1}')
+          echo "REWARD_INFO_LEN=$LEN"
+          for ((i=0; i<LEN; i++)); do
+            row=$(cast call "$PROVIDER" 'campaignRewardInfo(uint256,uint256)(uint256,uint256)' "$CAMPAIGN" "$i" --rpc-url "$RPC_URL")
+            echo "REWARD_SEGMENT index=$i $row"
+          done
+
+          echo '--- current stale-liquidation check ---'
           while IFS=$'\t' read -r tick ver idx; do
-            cur=$(cast call "$PROTOCOL" 'getTickVersion(int24)(uint256)' "$tick" --rpc-url "$RPC_URL")
-            pending=$(cast call "$FARM" 'pendingRewards(int24,uint256,uint256)(uint256)' "$tick" "$ver" "$idx" --rpc-url "$RPC_URL" 2>/dev/null || true)
-            info=$(cast call "$FARM" 'getPositionInfo(int24,uint256,uint256)((address,int24,uint256,uint256,uint256,uint128))' "$tick" "$ver" "$idx" --rpc-url "$RPC_URL" 2>/dev/null || true)
-            echo "ACTIVE_POSITION tick=$tick storedVersion=$ver currentVersion=$cur index=$idx pending=$pending info=$info"
+            cur=$(cast call "$PROTOCOL" 'getTickVersion(int24)(uint256)' "$tick" --rpc-url "$RPC_URL" | awk '{print $1}')
+            pending=$(cast call "$FARM" 'pendingRewards(int24,uint256,uint256)(uint256)' "$tick" "$ver" "$idx" --rpc-url "$RPC_URL" 2>/dev/null | awk '{print $1}' || true)
+            echo "ACTIVE_POSITION tick=$tick storedVersion=$ver currentVersion=$cur index=$idx liquidated=$([ "$cur" != "$ver" ] && echo true || echo false) pending=$pending"
           done < /tmp/active.tsv
