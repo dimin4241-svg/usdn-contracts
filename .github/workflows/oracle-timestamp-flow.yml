@@ -1,0 +1,19 @@
+name: Oracle timestamp flow
+on:
+  workflow_dispatch:
+  push:
+    branches: [security/susdn-live-config]
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: bash
+        run: |
+          set -euo pipefail
+          echo '--- lastUpdateTimestamp references ---'
+          grep -RIn --exclude-dir=out --exclude-dir=cache --exclude-dir=dependencies '_lastUpdateTimestamp\|lastUpdateTimestamp' src test | head -200 || true
+          echo '--- PriceInfo timestamp references ---'
+          grep -RIn --exclude-dir=out --exclude-dir=cache --exclude-dir=dependencies '\.timestamp' src/UsdnProtocol src/OracleMiddleware | grep -E 'price|Price|lastUpdate|funding' | head -250 || true
+          echo '--- applyPnlAndFunding references ---'
+          grep -RIn --exclude-dir=out --exclude-dir=cache --exclude-dir=dependencies '_applyPnlAndFunding' src/UsdnProtocol | head -200 || true
