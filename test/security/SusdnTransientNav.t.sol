@@ -20,7 +20,7 @@ interface IComptrollerLike {
 
 contract SusdnTransientNavTest is Test, IUsdnProtocolTypes {
     address constant PROTOCOL_ADDR = 0x656cB8C6d154Aad29d8771384089be5B5141f01a;
-    address constant WSTETH = 0x7f39c581F595b53c5Cb5Bc0B3f8Dc6FC935E2ca0;
+    address constant WSTETH = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0;
     address constant USDN_AGG = 0xd5004C5D3017862839e83981b110f27EE7B36EAa;
     address constant SUSDN_ACCESSOR = 0x4d54Abd78590bf94c8406d019aFF724DAb659A84;
 
