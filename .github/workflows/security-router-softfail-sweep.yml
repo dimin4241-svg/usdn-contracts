@@ -1,4 +1,4 @@
-name: USDN Router soft-fail custody proof
+name: USDN Router custody and preload proof
 
 on:
   push:
@@ -30,7 +30,7 @@ jobs:
           npm ci
           forge soldeer install
 
-      - name: Run isolated exact-Router PoC
+      - name: Run isolated exact-Router soft-fail PoC
         env:
           FOUNDRY_PROFILE: default
         run: |
@@ -39,7 +39,7 @@ jobs:
           rm -rf test
           mkdir -p test
           cp "$GITHUB_WORKSPACE/security/RouterSoftFailSweepPoC.t.sol" test/RouterSoftFailSweepPoC.t.sol
-          forge test --match-contract TestRouterSoftFailSweepPoC -vvvv
+          forge test --match-contract TestRouterSoftFailSweepPoC -vvv
 
       - name: Quantify current mainnet preload sensitivity
         env:
@@ -47,60 +47,38 @@ jobs:
           RPC_URL: 'https://ethereum-rpc.publicnode.com'
         run: |
           set -euo pipefail
-          echo "protocol=$PROTOCOL"
           RATIO=$(cast call "$PROTOCOL" 'getSdexBurnOnDepositRatio()(uint32)' --rpc-url "$RPC_URL" | awk '{print $1}')
           PRICE=$(cast call "$PROTOCOL" 'getLastPrice()(uint128)' --rpc-url "$RPC_URL" | awk '{print $1}')
           TS=$(cast call "$PROTOCOL" 'getLastUpdateTimestamp()(uint128)' --rpc-url "$RPC_URL" | awk '{print $1}')
           echo "sdexBurnOnDepositRatio=$RATIO"
           echo "lastPrice=$PRICE"
           echo "lastUpdateTimestamp=$TS"
-
-          export RATIO PRICE TS
+          export PRICE TS
           python3 - <<'PY'
           import os, subprocess
           protocol=os.environ['PROTOCOL']; rpc=os.environ['RPC_URL']
-          price=int(os.environ['PRICE']); ts=int(os.environ['TS'])
-          base=10**17  # 0.1 wstETH
-
+          price=int(os.environ['PRICE']); ts=int(os.environ['TS']); base=10**17
           def preview(amount):
-              p=subprocess.run([
-                  'cast','call',protocol,
-                  'previewDeposit(uint256,uint128,uint128)(uint256,uint256)',
-                  str(amount),str(price),str(ts),'--rpc-url',rpc
-              ], text=True, capture_output=True)
-              if p.returncode:
-                  raise RuntimeError((p.stderr or p.stdout).strip())
-              lines=[x.strip() for x in p.stdout.splitlines() if x.strip()]
-              vals=[int(x.split()[0]) for x in lines]
-              if len(vals) < 2: raise RuntimeError('unexpected preview output: '+p.stdout)
-              return vals[0], vals[1]
-
-          shares0, sdex0=preview(base)
+              p=subprocess.run(['cast','call',protocol,'previewDeposit(uint256,uint128,uint128)(uint256,uint256)',str(amount),str(price),str(ts),'--rpc-url',rpc],text=True,capture_output=True)
+              if p.returncode: raise RuntimeError((p.stderr or p.stdout).strip())
+              v=[int(x.strip().split()[0]) for x in p.stdout.splitlines() if x.strip()]
+              return v[0],v[1]
+          shares0,sdex0=preview(base)
+          _,sdex1=preview(base+1)
           print('baseAmountWei',base)
           print('basePreviewShares',shares0)
           print('baseSdexToBurnWei',sdex0)
-          if sdex0 == 0:
-              print('RESULT current SDEX burn is zero; preload-SDEX-budget grief path is inactive')
-              raise SystemExit(0)
-
-          # Find the smallest extra wstETH that increases the exact SDEX requirement.
-          hi=1
-          while hi <= 10**18:
-              _,s=preview(base+hi)
-              if s>sdex0: break
-              hi*=2
-          else:
-              print('RESULT no SDEX increment found within +1 wstETH')
-              raise SystemExit(0)
-          lo=0
-          while lo+1<hi:
-              mid=(lo+hi)//2
-              _,s=preview(base+mid)
-              if s>sdex0: hi=mid
-              else: lo=mid
-          shares1,sdex1=preview(base+hi)
-          print('minimalExtraWstethWei',hi)
-          print('sdexAfterMinimalExtraWei',sdex1)
-          print('sdexDeltaWei',sdex1-sdex0)
-          print('RESULT exact-SDEX workflow becomes underfunded once Router contains this extra wstETH before INITIATE_DEPOSIT')
+          print('oneWeiPreloadSdexToBurnWei',sdex1)
+          print('oneWeiPreloadSdexDeltaWei',sdex1-sdex0)
+          if sdex1 <= sdex0: raise RuntimeError('1 wei preload did not increase SDEX requirement')
           PY
+
+      - name: Run live mainnet-fork preload grief PoC
+        env:
+          FOUNDRY_PROFILE: default
+          MAINNET_RPC_URL: 'https://ethereum-rpc.publicnode.com'
+        run: |
+          set -euo pipefail
+          cd /tmp/router
+          cp "$GITHUB_WORKSPACE/security/RouterMainnetPreloadGriefPoC.t.sol" test/RouterMainnetPreloadGriefPoC.t.sol
+          forge test --match-contract TestRouterMainnetPreloadGriefPoC -vvvv
