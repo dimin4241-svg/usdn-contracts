@@ -1,0 +1,64 @@
+name: sUSDN live Enzyme policies and fees
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - security/usdn-susdn-enzyme
+    paths:
+      - .github/workflows/security-susdn-live-policies.yml
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      RPC_URL: "https://ethereum-rpc.publicnode.com"
+      ACCESSOR: "0x4d54Abd78590bf94c8406d019aFF724DAb659A84"
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Probe live Enzyme policies and fees
+        shell: bash
+        run: |
+          set -euo pipefail
+          PM=$(cast call "$ACCESSOR" 'getPolicyManager()(address)' --rpc-url "$RPC_URL")
+          FM=$(cast call "$ACCESSOR" 'getFeeManager()(address)' --rpc-url "$RPC_URL")
+          FD=$(cast call "$ACCESSOR" 'getFundDeployer()(address)' --rpc-url "$RPC_URL")
+          VI=$(cast call "$ACCESSOR" 'getValueInterpreter()(address)' --rpc-url "$RPC_URL")
+          echo "POLICY_MANAGER=$PM"
+          echo "FEE_MANAGER=$FM"
+          echo "FUND_DEPLOYER=$FD"
+          echo "VALUE_INTERPRETER=$VI"
+
+          POLICIES=$(cast call "$PM" 'getEnabledPoliciesForFund(address)(address[])' "$ACCESSOR" --rpc-url "$RPC_URL")
+          echo "ENABLED_POLICIES=$POLICIES"
+          python3 - "$POLICIES" <<'PY' >/tmp/policies.txt
+import re,sys
+for x in re.findall(r'0x[a-fA-F0-9]{40}', sys.argv[1]): print(x)
+PY
+          while read -r p; do
+            [ -z "$p" ] && continue
+            echo "POLICY=$p"
+            echo -n '  identifier='; cast call "$p" 'identifier()(string)' --rpc-url "$RPC_URL" || true
+            echo -n '  canDisable='; cast call "$p" 'canDisable()(bool)' --rpc-url "$RPC_URL" || true
+            echo -n '  implementedHooks='; cast call "$p" 'implementedHooks()(uint8[])' --rpc-url "$RPC_URL" || true
+          done </tmp/policies.txt
+
+          FEES=$(cast call "$FM" 'getEnabledFeesForFund(address)(address[])' "$ACCESSOR" --rpc-url "$RPC_URL")
+          echo "ENABLED_FEES=$FEES"
+          python3 - "$FEES" <<'PY' >/tmp/fees.txt
+import re,sys
+for x in re.findall(r'0x[a-fA-F0-9]{40}', sys.argv[1]): print(x)
+PY
+          while read -r f; do
+            [ -z "$f" ] && continue
+            echo "FEE=$f"
+            echo -n '  identifier='; cast call "$f" 'identifier()(string)' --rpc-url "$RPC_URL" || true
+            echo -n '  settlesOnBuyShares='; cast call "$f" 'settlesOnBuyShares()(bool)' --rpc-url "$RPC_URL" || true
+            echo -n '  settlesOnRedeemShares='; cast call "$f" 'settlesOnRedeemShares()(bool)' --rpc-url "$RPC_URL" || true
+          done </tmp/fees.txt
+
+          echo '=== REDEMPTION HOOK POLICIES ==='
+          # PolicyHook.RedeemSharesForSpecificAssets = 3
+          cast call "$PM" 'getEnabledPoliciesOnHookForFund(address,uint8)(address[])' "$ACCESSOR" 3 --rpc-url "$RPC_URL" || true
