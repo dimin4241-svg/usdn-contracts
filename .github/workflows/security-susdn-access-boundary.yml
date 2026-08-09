@@ -1,0 +1,56 @@
+name: sUSDN investor access boundary
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - security/usdn-susdn-enzyme
+    paths:
+      - .github/workflows/security-susdn-access-boundary.yml
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      RPC_URL: "https://ethereum-rpc.publicnode.com"
+      VAULT: "0xF67e2dC041b8A3c39d066037d29f500757b1e886"
+      ACCESSOR: "0x4d54Abd78590bf94c8406d019aFF724DAb659A84"
+      DEPOSIT_POLICY: "0xA66BAAa0cCb6468C5A2cB61f5D672C7bA0440Ee1"
+      ATTACKER: "0x1111111111111111111111111111111111111111"
+      OWNER: "0xB0470cF15B22a6A32c49a7C20E3821B944A76058"
+      CREATOR: "0xC3DC853dD716bd5754f421ef94fdCbac3902ab32"
+      PROTOCOL: "0x656cB8C6d154Aad29d8771384089be5B5141f01a"
+      ROUTER: "0x49f66B1616865b2a59caECb8352bbf2AC80983e1"
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Probe buy transfer and redemption boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          PM=$(cast call "$ACCESSOR" 'getPolicyManager()(address)' --rpc-url "$RPC_URL")
+          REG=$(cast call "$DEPOSIT_POLICY" 'getAddressListRegistry()(address)' --rpc-url "$RPC_URL")
+          IDS=$(cast call "$DEPOSIT_POLICY" 'getListIdsForFund(address)(uint256[])' "$ACCESSOR" --rpc-url "$RPC_URL")
+          echo "DEPOSIT_LIST_REGISTRY=$REG"
+          echo "DEPOSIT_LIST_IDS=$IDS"
+          for id in $(echo "$IDS" | tr -d '[],' ); do
+            echo "DEPOSIT_LIST_ID=$id"
+            echo -n '  owner='; cast call "$REG" 'getListOwner(uint256)(address)' "$id" --rpc-url "$RPC_URL"
+            echo -n '  updateType='; cast call "$REG" 'getListUpdateType(uint256)(uint8)' "$id" --rpc-url "$RPC_URL"
+          done
+          for pair in \
+            "attacker:$ATTACKER" \
+            "owner:$OWNER" \
+            "creator:$CREATOR" \
+            "protocol:$PROTOCOL" \
+            "router:$ROUTER" \
+            "vault:$VAULT"; do
+            name=${pair%%:*}; who=${pair#*:}
+            echo -n "DEPOSIT_ALLOWED_${name}="
+            cast call "$DEPOSIT_POLICY" 'passesRule(address,address)(bool)' "$ACCESSOR" "$who" --rpc-url "$RPC_URL"
+          done
+          echo -n 'SHARES_FREELY_TRANSFERABLE='; cast call "$VAULT" 'sharesAreFreelyTransferable()(bool)' --rpc-url "$RPC_URL" || true
+          echo -n 'TRANSFER_HOOK_POLICIES='; cast call "$PM" 'getEnabledPoliciesOnHookForFund(address,uint8)(address[])' "$ACCESSOR" 2 --rpc-url "$RPC_URL"
+          echo -n 'REDEEM_SPECIFIC_HOOK_POLICIES='; cast call "$PM" 'getEnabledPoliciesOnHookForFund(address,uint8)(address[])' "$ACCESSOR" 3 --rpc-url "$RPC_URL"
+          echo -n 'SHARES_ACTION_TIMELOCK='; cast call "$ACCESSOR" 'getSharesActionTimelock()(uint256)' --rpc-url "$RPC_URL"
