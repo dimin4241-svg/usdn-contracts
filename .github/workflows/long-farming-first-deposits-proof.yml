@@ -1,0 +1,93 @@
+name: USDN LongFarming historical first-depositor proof
+
+on:
+  push:
+    branches:
+      - security/usdn-long-farming-zero-share-backlog
+
+permissions:
+  contents: read
+
+jobs:
+  prove-history:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect first and second production deposits through Blockscout
+        env:
+          FIRST_TX: '0x0146d8d8d05854b0e2da03c9e700a2cae2cf05c9819c5eac9392dd6c9b6d916a'
+          SECOND_TX: '0x89f23cdd055483cebf5352298e1a99540e8b73e48edfa9d214d0225fc5596fd0'
+          LONG_FARMING: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
+          FARMING_RANGE: '0x7d85C0905a6E1Ab5837a0b57cD94A419d3a77523'
+          REWARD_TOKEN: '0x5DE8ab7E27f6E7A1fFf3E5B337584Aa43961BEeF'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, json, urllib.request
+
+          base='https://eth.blockscout.com/api/v2'
+          first=os.environ['FIRST_TX']
+          second=os.environ['SECOND_TX']
+          lf=os.environ['LONG_FARMING'].lower()
+          fr=os.environ['FARMING_RANGE'].lower()
+          reward=os.environ['REWARD_TOKEN'].lower()
+
+          def get(path):
+              req=urllib.request.Request(base+path, headers={'User-Agent':'USDN-security-readonly/1.0'})
+              with urllib.request.urlopen(req, timeout=60) as r:
+                  return json.load(r)
+
+          def addr(x):
+              if isinstance(x,dict): return (x.get('hash') or '').lower()
+              return (x or '').lower()
+
+          for label,txh in [('FIRST',first),('SECOND',second)]:
+              print(f'=== {label} DEPOSIT TX {txh} ===')
+              tx=get('/transactions/'+txh)
+              for k in ['block_number','timestamp','status','method','decoded_input','from','to','value','gas_used']:
+                  if k in tx: print(k, json.dumps(tx[k], sort_keys=True))
+
+              transfers=get('/transactions/'+txh+'/token-transfers')
+              items=transfers.get('items',[]) if isinstance(transfers,dict) else transfers
+              print('tokenTransferCount',len(items))
+              for t in items:
+                  token_addr=addr(t.get('token'))
+                  f=addr(t.get('from'))
+                  to=addr(t.get('to'))
+                  if token_addr==reward or f in (lf,fr) or to in (lf,fr):
+                      print('TOKEN_TRANSFER',json.dumps(t,sort_keys=True))
+
+              logs=get('/transactions/'+txh+'/logs')
+              items=logs.get('items',[]) if isinstance(logs,dict) else logs
+              print('logCount',len(items))
+              for x in items:
+                  a=addr(x.get('address'))
+                  if a in (lf,fr,reward):
+                      print('RELEVANT_LOG',json.dumps(x,sort_keys=True))
+
+              try:
+                  changes=get('/transactions/'+txh+'/state-changes')
+                  items=changes.get('items',[]) if isinstance(changes,dict) else changes
+                  print('stateChangeCount',len(items))
+                  for x in items:
+                      a=addr(x.get('address'))
+                      if a in (lf,fr,reward):
+                          print('RELEVANT_STATE_CHANGE',json.dumps(x,sort_keys=True))
+              except Exception as e:
+                  print('stateChangesUnavailable',repr(e))
+
+          RPB=149_146_814_241_486_068_111
+          phase_start=21_684_000
+          first_block=21_686_796
+          second_block=21_688_721
+          pre_entry=(first_block-phase_start)*RPB
+          legitimate_post=(second_block-first_block)*RPB
+          harvested_at_second=(second_block-phase_start)*RPB
+          print('=== EXPECTED ACCOUNTING FROM OFFICIAL SOURCE ===')
+          print('idleBlocksBeforeFirstDeposit',first_block-phase_start)
+          print('idlePreEntryWei',pre_entry)
+          print('legitimateBlocksAfterFirstEntryBeforeSecondDeposit',second_block-first_block)
+          print('legitimatePostEntryWei',legitimate_post)
+          print('totalProviderRewardThroughSecondDepositWei',harvested_at_second)
+          print('checkSum',pre_entry+legitimate_post)
+          PY
