@@ -1,0 +1,60 @@
+name: sUSDN live Enzyme configuration
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/security-susdn-live-config.yml'
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Query live sUSDN configuration
+        env:
+          RPC_URL: https://ethereum-rpc.publicnode.com
+          VAULT: '0xF67e2dC041b8A3c39d066037d29f500757b1e886'
+        run: |
+          set -euo pipefail
+          call() { cast call "$1" "$2" ${3:-} --rpc-url "$RPC_URL"; }
+          echo "SUSDN_BLOCK=$(cast block-number --rpc-url "$RPC_URL")"
+          echo "VAULT=$VAULT"
+          ACCESSOR=$(call "$VAULT" 'getAccessor()(address)')
+          echo "ACCESSOR=$ACCESSOR"
+          echo "OWNER=$(call "$VAULT" 'getOwner()(address)')"
+          echo "CREATOR=$(call "$VAULT" 'getCreator()(address)')"
+          echo "VAULT_LIB=$(call "$VAULT" 'getVaultLib()(address)')"
+          echo "TOTAL_SUPPLY=$(call "$VAULT" 'totalSupply()(uint256)')"
+          echo "FREELY_TRANSFERABLE=$(call "$VAULT" 'sharesAreFreelyTransferable()(bool)')"
+          echo "TRACKED_ASSETS=$(call "$VAULT" 'getTrackedAssets()(address[])')"
+          echo "EXTERNAL_POSITIONS=$(call "$VAULT" 'getActiveExternalPositions()(address[])')"
+          DENOM=$(call "$ACCESSOR" 'getDenominationAsset()(address)')
+          VI=$(call "$ACCESSOR" 'getValueInterpreter()(address)')
+          echo "DENOMINATION_ASSET=$DENOM"
+          echo "VALUE_INTERPRETER=$VI"
+          echo "INTEGRATION_MANAGER=$(call "$ACCESSOR" 'getIntegrationManager()(address)')"
+          echo "POLICY_MANAGER=$(call "$ACCESSOR" 'getPolicyManager()(address)')"
+          echo "FEE_MANAGER=$(call "$ACCESSOR" 'getFeeManager()(address)')"
+          echo "SHARES_ACTION_TIMELOCK=$(call "$ACCESSOR" 'getSharesActionTimelock()(uint256)')"
+          echo "GAV=$(call "$ACCESSOR" 'calcGav()(uint256)')"
+          echo "GROSS_SHARE_VALUE=$(call "$ACCESSOR" 'calcGrossShareValue()(uint256)')"
+          echo "DENOM_SYMBOL=$(call "$DENOM" 'symbol()(string)' || true)"
+          echo "DENOM_DECIMALS=$(call "$DENOM" 'decimals()(uint8)' || true)"
+
+          assets=$(call "$VAULT" 'getTrackedAssets()(address[])' | tr -d '[],' )
+          for a in $assets; do
+            echo "--- ASSET $a ---"
+            echo "SYMBOL=$(call "$a" 'symbol()(string)' || true)"
+            echo "DECIMALS=$(call "$a" 'decimals()(uint8)' || true)"
+            bal=$(call "$a" 'balanceOf(address)(uint256)' "$VAULT" || echo 0)
+            echo "BALANCE=$bal"
+            echo "SUPPORTED=$(call "$VI" 'isSupportedAsset(address)(bool)' "$a" || true)"
+            echo "IS_PRIMITIVE=$(call "$VI" 'isSupportedPrimitiveAsset(address)(bool)' "$a" || true)"
+            echo "IS_DERIVATIVE=$(call "$VI" 'isSupportedDerivativeAsset(address)(bool)' "$a" || true)"
+            echo "PRICE_FEED=$(call "$VI" 'getPriceFeedForDerivative(address)(address)' "$a" || true)"
+            echo "AGGREGATOR=$(call "$VI" 'getAggregatorForPrimitive(address)(address)' "$a" || true)"
+            echo "VALUE_IN_DENOM=$(call "$VI" 'calcCanonicalAssetValue(address,uint256,address)(uint256)' "$a $bal $DENOM" || true)"
+          done
