@@ -1,0 +1,61 @@
+name: USDN LongFarming live reward state
+
+on:
+  push:
+    branches: [security/susdn-live-config]
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Read live LongFarming and FarmingRange state
+        env:
+          RPC_URL: https://ethereum-rpc.publicnode.com
+          FARM: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
+          PROVIDER: '0x7d85C0905a6E1Ab5837a0b57cD94A419d3a77523'
+          CAMPAIGN: '20'
+        shell: bash
+        run: |
+          set -euo pipefail
+          c() {
+            local addr="$1" sig="$2"; shift 2
+            printf '%s :: %s => ' "$addr" "$sig"
+            cast call "$addr" "$sig" "$@" --rpc-url "$RPC_URL" 2>/dev/null || echo CALL_FAILED
+          }
+
+          echo "BLOCK=$(cast block-number --rpc-url "$RPC_URL")"
+          echo "TIMESTAMP=$(cast block latest --field timestamp --rpc-url "$RPC_URL")"
+          echo '--- LongFarming ---'
+          c "$FARM" 'USDN_PROTOCOL()(address)'
+          c "$FARM" 'REWARDS_PROVIDER()(address)'
+          c "$FARM" 'CAMPAIGN_ID()(uint256)'
+          c "$FARM" 'REWARD_TOKEN()(address)'
+          c "$FARM" 'getPositionsCount()(uint256)'
+          c "$FARM" 'getTotalShares()(uint256)'
+          c "$FARM" 'getAccRewardPerShare()(uint256)'
+          c "$FARM" 'getLastRewardBlock()(uint256)'
+          c "$FARM" 'getNotifierRewardsBps()(uint16)'
+
+          REWARD=$(cast call "$FARM" 'REWARD_TOKEN()(address)' --rpc-url "$RPC_URL")
+          c "$REWARD" 'balanceOf(address)(uint256)' "$FARM"
+
+          echo '--- FarmingRange campaign ---'
+          c "$PROVIDER" 'pendingReward(uint256,address)(uint256)' "$CAMPAIGN" "$FARM"
+          c "$PROVIDER" 'currentEndBlock(uint256)(uint256)' "$CAMPAIGN"
+          c "$PROVIDER" 'currentRewardPerBlock(uint256)(uint256)' "$CAMPAIGN"
+          c "$PROVIDER" 'rewardInfoLen(uint256)(uint256)' "$CAMPAIGN"
+          c "$PROVIDER" 'campaignInfo(uint256)((address,address,uint256,uint256,uint256,uint256,uint256))' "$CAMPAIGN"
+          c "$PROVIDER" 'userInfo(uint256,address)((uint256,uint256))' "$CAMPAIGN" "$FARM"
+
+          LEN=$(cast call "$PROVIDER" 'rewardInfoLen(uint256)(uint256)' "$CAMPAIGN" --rpc-url "$RPC_URL" | awk '{print $1}')
+          if [[ "$LEN" =~ ^[0-9]+$ ]] && [ "$LEN" -gt 0 ]; then
+            START=$(( LEN > 5 ? LEN-5 : 0 ))
+            for ((i=START; i<LEN; i++)); do
+              c "$PROVIDER" 'campaignRewardInfo(uint256,uint256)(uint256,uint256)' "$CAMPAIGN" "$i"
+            done
+          fi
