@@ -60,14 +60,14 @@ jobs:
                   protocol.setPositionFeeBps(LIVE_POSITION_FEE_BPS);
                   vm.stopPrank();
 
-                  // Ask for leverage well above the protocol maximum. Upstream code must clamp this to its configured 25x max,
-                  // removing our dependence on manually guessing the penalty/tick-rounded liquidation price.
+                  // 1958/2000 is below the live 2% safety-margin ceiling (1960), but implies leverage above 25x.
+                  // Upstream code should therefore enter its max-leverage clamp instead of rejecting on safety margin.
                   posId = setUpUserPositionInLong(
                       OpenParams({
                           user: address(this),
                           untilAction: ProtocolAction.ValidateOpenPosition,
                           positionSize: POSITION_AMOUNT,
-                          desiredLiqPrice: uint128(uint256(params.initialPrice) - 1 ether),
+                          desiredLiqPrice: uint128(uint256(params.initialPrice) * 979 / 1000),
                           price: params.initialPrice
                       })
                   );
