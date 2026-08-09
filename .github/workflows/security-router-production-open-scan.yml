@@ -1,0 +1,123 @@
+name: USDN Router production open-position scan
+
+on:
+  push:
+    branches:
+      - security/usdn-router-softfail-sweep
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Find real Router INITIATE_OPEN transactions and decode amounts
+        env:
+          RPC_URL: 'https://ethereum-rpc.publicnode.com'
+          PROTOCOL: '0x656cB8C6d154Aad29d8771384089be5B5141f01a'
+          ROUTER: '0x49f66B1616865b2a59caECb8352bbf2AC80983e1'
+        run: |
+          set -euo pipefail
+          EVENT='InitiatedOpenPosition(address,address,uint40,uint128,uint128,uint128,(int24,uint256,uint256))'
+          TOPIC=$(cast keccak "$EVENT")
+          LATEST=$(cast block-number --rpc-url "$RPC_URL")
+          START=24000000
+          CHUNK=20000
+          echo "OPEN_SCAN_TOPIC=$TOPIC"
+          echo "OPEN_SCAN_LATEST=$LATEST"
+          : > /tmp/router-open-txs.txt
+
+          # Scan forward from late 2025. Stop once 8 distinct Router initiations are found.
+          for ((from=START; from<=LATEST; from+=CHUNK)); do
+            to=$((from+CHUNK-1)); if ((to>LATEST)); then to=$LATEST; fi
+            from_hex=$(printf '0x%x' "$from")
+            to_hex=$(printf '0x%x' "$to")
+            json=$(cast rpc eth_getLogs "{\"address\":\"$PROTOCOL\",\"fromBlock\":\"$from_hex\",\"toBlock\":\"$to_hex\",\"topics\":[\"$TOPIC\"]}" --rpc-url "$RPC_URL" 2>/dev/null || echo '[]')
+            python3 - "$json" >> /tmp/candidate-hashes.txt <<'PY'
+          import json,sys
+          try: arr=json.loads(sys.argv[1])
+          except Exception: arr=[]
+          for x in arr:
+              h=x.get('transactionHash')
+              if h: print(h)
+          PY
+            if [[ -s /tmp/candidate-hashes.txt ]]; then
+              sort -u /tmp/candidate-hashes.txt -o /tmp/candidate-hashes.txt
+              : > /tmp/router-open-txs.txt
+              while read -r h; do
+                [[ -z "$h" ]] && continue
+                dest=$(cast tx "$h" to --rpc-url "$RPC_URL" 2>/dev/null || true)
+                if [[ "${dest,,}" == "${ROUTER,,}" ]]; then
+                  echo "$h" >> /tmp/router-open-txs.txt
+                fi
+              done < /tmp/candidate-hashes.txt
+              sort -u /tmp/router-open-txs.txt -o /tmp/router-open-txs.txt
+              count=$(wc -l < /tmp/router-open-txs.txt)
+              echo "OPEN_SCAN_PROGRESS from=$from to=$to router_txs=$count"
+              if ((count>=8)); then break; fi
+            fi
+          done
+
+          echo '=== ROUTER OPEN TX HASHES ==='
+          cat /tmp/router-open-txs.txt || true
+          count=$(wc -l < /tmp/router-open-txs.txt)
+          echo "OPEN_SCAN_ROUTER_TX_COUNT=$count"
+          test "$count" -gt 0
+
+          : > /tmp/open-inputs.txt
+          while read -r h; do
+            [[ -z "$h" ]] && continue
+            input=$(cast tx "$h" input --rpc-url "$RPC_URL")
+            block=$(cast tx "$h" blockNumber --rpc-url "$RPC_URL")
+            printf '%s %s %s\n' "$h" "$block" "$input" >> /tmp/open-inputs.txt
+          done < /tmp/router-open-txs.txt
+
+          python3 - <<'PY'
+          EXECUTE_SELECTOR='24856bc3'
+          INITIATE_OPEN=0x22
+          CONTRACT_BALANCE=1<<255
+          def u256(b,o): return int.from_bytes(b[o:o+32],'big')
+          def addr(b,o): return '0x'+b[o+12:o+32].hex()
+          def dyn(b,o):
+              n=u256(b,o); return b[o+32:o+32+n]
+          def decode_execute(cd):
+              assert cd[:4].hex()==EXECUTE_SELECTOR, cd[:4].hex()
+              b=cd[4:]; cmds=dyn(b,u256(b,0)); io=u256(b,32); n=u256(b,io); head=io+32
+              ins=[]
+              for i in range(n):
+                  rel=u256(b,head+32*i); ins.append(dyn(b,head+rel))
+              return cmds,ins
+          def decode_open(enc):
+              p=u256(enc,0)
+              return dict(payment=u256(enc,p), amount=u256(enc,p+32), desiredLiqPrice=u256(enc,p+64),
+                          userMaxPrice=u256(enc,p+96), userMaxLeverage=u256(enc,p+128),
+                          to=addr(enc,p+160), validator=addr(enc,p+192), deadline=u256(enc,p+224),
+                          ethAmount=u256(enc,p+320))
+          for line in open('/tmp/open-inputs.txt'):
+              h,block_s,inp=line.strip().split(); cd=bytes.fromhex(inp.removeprefix('0x'))
+              cmds,ins=decode_execute(cd)
+              print('OPEN_PROD_TX',h)
+              print('OPEN_PROD_BLOCK',block_s)
+              print('OPEN_PROD_COMMANDS',' '.join(f'{x:02x}' for x in cmds))
+              ix=[i for i,c in enumerate(cmds) if (c&0x3f)==INITIATE_OPEN]
+              print('OPEN_PROD_INITIATE_OPEN_INDICES',ix)
+              for i in ix:
+                  d=decode_open(ins[i])
+                  print('OPEN_PROD_INDEX',i)
+                  print('OPEN_PROD_PAYMENT',d['payment'])
+                  print('OPEN_PROD_AMOUNT_WEI',d['amount'])
+                  print('OPEN_PROD_AMOUNT_WSTETH',f"{d['amount']/1e18:.18f}")
+                  print('OPEN_PROD_AMOUNT_IS_CONTRACT_BALANCE',d['amount']==CONTRACT_BALANCE)
+                  print('OPEN_PROD_DESIRED_LIQ_PRICE',d['desiredLiqPrice'])
+                  print('OPEN_PROD_USER_MAX_PRICE',d['userMaxPrice'])
+                  print('OPEN_PROD_USER_MAX_LEVERAGE',d['userMaxLeverage'])
+                  print('OPEN_PROD_TO',d['to'])
+                  print('OPEN_PROD_VALIDATOR',d['validator'])
+                  print('OPEN_PROD_ETH_AMOUNT',d['ethAmount'])
+              print('---')
+          PY
