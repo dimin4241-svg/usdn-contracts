@@ -40,3 +40,67 @@ jobs:
           mkdir -p test
           cp "$GITHUB_WORKSPACE/security/RouterSoftFailSweepPoC.t.sol" test/RouterSoftFailSweepPoC.t.sol
           forge test --match-contract TestRouterSoftFailSweepPoC -vvvv
+
+      - name: Quantify current mainnet preload sensitivity
+        env:
+          PROTOCOL: '0x656cb8c6d154aad29d8771384089be5b5141f01a'
+          RPC_URL: 'https://ethereum-rpc.publicnode.com'
+        run: |
+          set -euo pipefail
+          echo "protocol=$PROTOCOL"
+          RATIO=$(cast call "$PROTOCOL" 'getSdexBurnOnDepositRatio()(uint32)' --rpc-url "$RPC_URL" | awk '{print $1}')
+          PRICE=$(cast call "$PROTOCOL" 'getLastPrice()(uint128)' --rpc-url "$RPC_URL" | awk '{print $1}')
+          TS=$(cast call "$PROTOCOL" 'getLastUpdateTimestamp()(uint128)' --rpc-url "$RPC_URL" | awk '{print $1}')
+          echo "sdexBurnOnDepositRatio=$RATIO"
+          echo "lastPrice=$PRICE"
+          echo "lastUpdateTimestamp=$TS"
+
+          export RATIO PRICE TS
+          python3 - <<'PY'
+          import os, subprocess
+          protocol=os.environ['PROTOCOL']; rpc=os.environ['RPC_URL']
+          price=int(os.environ['PRICE']); ts=int(os.environ['TS'])
+          base=10**17  # 0.1 wstETH
+
+          def preview(amount):
+              p=subprocess.run([
+                  'cast','call',protocol,
+                  'previewDeposit(uint256,uint128,uint128)(uint256,uint256)',
+                  str(amount),str(price),str(ts),'--rpc-url',rpc
+              ], text=True, capture_output=True)
+              if p.returncode:
+                  raise RuntimeError((p.stderr or p.stdout).strip())
+              lines=[x.strip() for x in p.stdout.splitlines() if x.strip()]
+              vals=[int(x.split()[0]) for x in lines]
+              if len(vals) < 2: raise RuntimeError('unexpected preview output: '+p.stdout)
+              return vals[0], vals[1]
+
+          shares0, sdex0=preview(base)
+          print('baseAmountWei',base)
+          print('basePreviewShares',shares0)
+          print('baseSdexToBurnWei',sdex0)
+          if sdex0 == 0:
+              print('RESULT current SDEX burn is zero; preload-SDEX-budget grief path is inactive')
+              raise SystemExit(0)
+
+          # Find the smallest extra wstETH that increases the exact SDEX requirement.
+          hi=1
+          while hi <= 10**18:
+              _,s=preview(base+hi)
+              if s>sdex0: break
+              hi*=2
+          else:
+              print('RESULT no SDEX increment found within +1 wstETH')
+              raise SystemExit(0)
+          lo=0
+          while lo+1<hi:
+              mid=(lo+hi)//2
+              _,s=preview(base+mid)
+              if s>sdex0: hi=mid
+              else: lo=mid
+          shares1,sdex1=preview(base+hi)
+          print('minimalExtraWstethWei',hi)
+          print('sdexAfterMinimalExtraWei',sdex1)
+          print('sdexDeltaWei',sdex1-sdex0)
+          print('RESULT exact-SDEX workflow becomes underfunded once Router contains this extra wstETH before INITIATE_DEPOSIT')
+          PY
