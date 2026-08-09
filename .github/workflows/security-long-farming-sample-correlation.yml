@@ -1,0 +1,69 @@
+name: USDN LongFarming sample liquidation correlation
+
+on:
+  push:
+    branches: [security/susdn-live-config]
+  workflow_dispatch:
+
+jobs:
+  correlate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Find exact liquidation blocks by archived tickVersion transition
+        env:
+          RPC_URL: https://ethereum-rpc.publicnode.com
+          PROTOCOL: '0x656cb8c6d154aad29d8771384089be5b5141f01a'
+          FARM: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
+          PROVIDER: '0x7d85C0905a6E1Ab5837a0b57cD94A419d3a77523'
+          CAMPAIGN: '20'
+          DEPLOYMENT_BLOCK: '21681344'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version_at() {
+            local tick="$1" block="$2"
+            cast call "$PROTOCOL" 'getTickVersion(int24)(uint256)' "$tick" --block "$block" --rpc-url "$RPC_URL" | awk '{print $1}'
+          }
+
+          correlate() {
+            local tick="$1" stored="$2" slash="$3"
+            local lo="$DEPLOYMENT_BLOCK" hi="$slash"
+            local vlo vhi
+            vlo=$(version_at "$tick" "$lo")
+            vhi=$(version_at "$tick" "$hi")
+            echo "SAMPLE_BEGIN tick=$tick storedVersion=$stored slashBlock=$slash versionAtLo=$vlo versionAtSlash=$vhi"
+            if [ "$vhi" -le "$stored" ]; then
+              echo "NO_LIQUIDATION_BEFORE_SLASH"
+              return 1
+            fi
+            # Find first block where current tick version becomes greater than the farming position's stored version.
+            while [ $((hi-lo)) -gt 1 ]; do
+              local mid=$(((lo+hi)/2)) vmid
+              vmid=$(version_at "$tick" "$mid")
+              if [ "$vmid" -gt "$stored" ]; then hi="$mid"; else lo="$mid"; fi
+            done
+            local before after
+            before=$(version_at "$tick" $((hi-1)))
+            after=$(version_at "$tick" "$hi")
+            echo "LIQUIDATION_TRANSITION tick=$tick storedVersion=$stored liquidationBlock=$hi versionBefore=$before versionAfter=$after slashBlock=$slash delayBlocks=$((slash-hi))"
+            echo "--- Slash event at block $slash ---"
+            cast logs --address "$FARM" --from-block "$slash" --to-block "$slash" \
+              'Slash(address,uint256,uint256,int24,uint256,uint256)' --rpc-url "$RPC_URL" || true
+            echo "SAMPLE_END"
+          }
+
+          # Real mainnet Slash events reconstructed from LongFarming history.
+          correlate 73167 1 21827817
+          correlate 79755 2 22618625
+
+          echo '--- campaign reward segments ---'
+          LEN=$(cast call "$PROVIDER" 'rewardInfoLen(uint256)(uint256)' "$CAMPAIGN" --rpc-url "$RPC_URL" | awk '{print $1}')
+          echo "REWARD_INFO_LEN=$LEN"
+          for ((i=0; i<LEN; i++)); do
+            row=$(cast call "$PROVIDER" 'campaignRewardInfo(uint256,uint256)(uint256,uint256)' "$CAMPAIGN" "$i" --rpc-url "$RPC_URL")
+            echo "REWARD_SEGMENT index=$i $row"
+          done
