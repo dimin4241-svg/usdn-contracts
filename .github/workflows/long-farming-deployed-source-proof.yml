@@ -1,0 +1,42 @@
+name: USDN LongFarming deployed source proof
+
+on:
+  push:
+    branches:
+      - security/usdn-long-farming-zero-share-backlog
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch verified deployed source from Blockscout
+        env:
+          LONG_FARMING: '0xF9D36078A248AF249AA57ae1D5D0c1033d6Bbe27'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, json, urllib.request
+          addr=os.environ['LONG_FARMING']
+          url=f'https://eth.blockscout.com/api/v2/smart-contracts/{addr}'
+          req=urllib.request.Request(url,headers={'User-Agent':'USDN-security-readonly/1.0'})
+          with urllib.request.urlopen(req,timeout=60) as r: out=json.load(r)
+          print('name',out.get('name'))
+          print('compiler_version',out.get('compiler_version'))
+          print('optimization_enabled',out.get('optimization_enabled'))
+          print('optimization_runs',out.get('optimization_runs'))
+          print('is_verified',out.get('is_verified'))
+          source=out.get('source_code') or ''
+          print('sourceLength',len(source))
+          for needle in ['function _registerDeposit','function _updateRewards','if (_totalShares == 0)','_totalShares += posInfo.shares','REWARDS_PROVIDER.harvest']:
+              idx=source.find(needle)
+              print('NEEDLE',needle,'INDEX',idx)
+              if idx>=0:
+                  print(source[max(0,idx-700):idx+1800])
+          if not source:
+              print('keys',sorted(out.keys()))
+              print(json.dumps(out,sort_keys=True)[:12000])
+          PY
