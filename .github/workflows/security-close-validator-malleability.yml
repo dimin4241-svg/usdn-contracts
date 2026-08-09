@@ -32,9 +32,11 @@ jobs:
         run: |
           set -euo pipefail
           cp security/CloseDelegationValidatorMalleabilityPoC.t.sol /tmp/CloseDelegationValidatorMalleabilityPoC.t.sol
-          git checkout f9171be7feed778213a8c5d4e4dfce674ba16b4d -- .
+          git reset --hard f9171be7feed778213a8c5d4e4dfce674ba16b4d
+          git clean -fdx
           mkdir -p security
           cp /tmp/CloseDelegationValidatorMalleabilityPoC.t.sol security/CloseDelegationValidatorMalleabilityPoC.t.sol
+          test "$(git rev-parse HEAD)" = "f9171be7feed778213a8c5d4e4dfce674ba16b4d"
 
       - name: Install exact snapshot dependencies
         run: npm ci && forge soldeer install
