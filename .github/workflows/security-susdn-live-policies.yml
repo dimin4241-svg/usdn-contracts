@@ -33,32 +33,25 @@ jobs:
 
           POLICIES=$(cast call "$PM" 'getEnabledPoliciesForFund(address)(address[])' "$ACCESSOR" --rpc-url "$RPC_URL")
           echo "ENABLED_POLICIES=$POLICIES"
-          python3 - "$POLICIES" <<'PY' >/tmp/policies.txt
-import re,sys
-for x in re.findall(r'0x[a-fA-F0-9]{40}', sys.argv[1]): print(x)
-PY
+          python3 -c 'import re,sys; print("\n".join(re.findall(r"0x[a-fA-F0-9]{40}", sys.argv[1])))' "$POLICIES" > /tmp/policies.txt
           while read -r p; do
             [ -z "$p" ] && continue
             echo "POLICY=$p"
             echo -n '  identifier='; cast call "$p" 'identifier()(string)' --rpc-url "$RPC_URL" || true
             echo -n '  canDisable='; cast call "$p" 'canDisable()(bool)' --rpc-url "$RPC_URL" || true
             echo -n '  implementedHooks='; cast call "$p" 'implementedHooks()(uint8[])' --rpc-url "$RPC_URL" || true
-          done </tmp/policies.txt
+          done < /tmp/policies.txt
 
           FEES=$(cast call "$FM" 'getEnabledFeesForFund(address)(address[])' "$ACCESSOR" --rpc-url "$RPC_URL")
           echo "ENABLED_FEES=$FEES"
-          python3 - "$FEES" <<'PY' >/tmp/fees.txt
-import re,sys
-for x in re.findall(r'0x[a-fA-F0-9]{40}', sys.argv[1]): print(x)
-PY
+          python3 -c 'import re,sys; print("\n".join(re.findall(r"0x[a-fA-F0-9]{40}", sys.argv[1])))' "$FEES" > /tmp/fees.txt
           while read -r f; do
             [ -z "$f" ] && continue
             echo "FEE=$f"
             echo -n '  identifier='; cast call "$f" 'identifier()(string)' --rpc-url "$RPC_URL" || true
             echo -n '  settlesOnBuyShares='; cast call "$f" 'settlesOnBuyShares()(bool)' --rpc-url "$RPC_URL" || true
             echo -n '  settlesOnRedeemShares='; cast call "$f" 'settlesOnRedeemShares()(bool)' --rpc-url "$RPC_URL" || true
-          done </tmp/fees.txt
+          done < /tmp/fees.txt
 
           echo '=== REDEMPTION HOOK POLICIES ==='
-          # PolicyHook.RedeemSharesForSpecificAssets = 3
           cast call "$PM" 'getEnabledPoliciesOnHookForFund(address,uint8)(address[])' "$ACCESSOR" 3 --rpc-url "$RPC_URL" || true
