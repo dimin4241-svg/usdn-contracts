@@ -1,0 +1,53 @@
+name: Inspect Enzyme USDN aggregator
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - security/usdn-susdn-enzyme
+    paths:
+      - .github/workflows/security-usdn-enzyme-aggregator.yml
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    env:
+      RPC_URL: "https://ethereum-rpc.publicnode.com"
+      AGG: "0xd5004C5D3017862839e83981b110f27EE7B36EAa"
+      USDN: "0xde17a000BA631c5d7c2Bd9FB692EFeA52D90DEE2"
+      PROTOCOL: "0x656cB8C6d154Aad29d8771384089be5B5141f01a"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Inspect runtime
+        shell: bash
+        run: |
+          set -u
+          CODE=$(cast code "$AGG" --rpc-url "$RPC_URL")
+          echo "CODE_BYTES=$(( (${#CODE}-2)/2 ))"
+          echo "CODEHASH=$(cast codehash "$AGG" --rpc-url "$RPC_URL")"
+          echo "HAS_USDN_ADDRESS=$(echo "${CODE,,}" | grep -q "${USDN:2}" && echo yes || echo no)"
+          echo "HAS_PROTOCOL_ADDRESS=$(echo "${CODE,,}" | grep -q "${PROTOCOL:2}" && echo yes || echo no)"
+          echo '=== SELECTORS ==='
+          cast selectors "$CODE" || true
+          echo '=== DISASSEMBLY ==='
+          cast disassemble "$CODE" | head -n 350
+          echo '=== COMMON GETTERS ==='
+          for sig in \
+            'asset()(address)' \
+            'USDN()(address)' \
+            'usdn()(address)' \
+            'protocol()(address)' \
+            'USDN_PROTOCOL()(address)' \
+            'getUsdn()(address)' \
+            'getProtocol()(address)' \
+            'priceFeed()(address)' \
+            'getPriceFeed()(address)' \
+            'staleThreshold()(uint256)' \
+            'HEARTBEAT()(uint256)' \
+            'latestRoundData()(uint80,int256,uint256,uint256,uint80)'; do
+              echo "TRY $sig"
+              cast call "$AGG" "$sig" --rpc-url "$RPC_URL" || true
+          done
