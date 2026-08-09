@@ -24,13 +24,11 @@ jobs:
         run: |
           set -euo pipefail
           BLOCK=$(cast block-number --rpc-url "$RPC_URL")
-          BLOCK_TS=$(cast block "$BLOCK" timestamp --rpc-url "$RPC_URL")
           ACCESSOR=$(cast call "$VAULT" 'getAccessor()(address)' --rpc-url "$RPC_URL")
           VI=$(cast call "$ACCESSOR" 'getValueInterpreter()(address)' --rpc-url "$RPC_URL")
           DENOM=$(cast call "$ACCESSOR" 'getDenominationAsset()(address)' --rpc-url "$RPC_URL")
           USDN_FEED=$(cast call "$VI" 'getAggregatorForPrimitive(address)(address)' "$USDN" --rpc-url "$RPC_URL")
           echo "SUSDN_BLOCK=$BLOCK"
-          echo "SUSDN_BLOCK_TIMESTAMP=$BLOCK_TS"
           echo "ACCESSOR=$ACCESSOR"
           echo "DENOMINATION_ASSET=$DENOM"
           echo "VALUE_INTERPRETER=$VI"
@@ -65,7 +63,7 @@ jobs:
           echo '=== USDN FEED SURFACE ==='
           BYTECODE=$(cast code "$USDN_FEED" --rpc-url "$RPC_URL")
           echo "USDN_FEED_CODE_BYTES=$(( (${#BYTECODE} - 2) / 2 ))"
-          echo "$BYTECODE" | cast selectors || true
+          cast selectors "$BYTECODE" || true
           for sig in \
             'owner()(address)' \
             'getOwner()(address)' \
