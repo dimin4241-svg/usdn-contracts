@@ -27,9 +27,11 @@ jobs:
           set +e
           echo '=== USDNR ==='
           for sig in \
-            'yieldRecipient()(address)' \
+            'getYieldRecipient()(address)' \
+            'owner()(address)' \
             'totalSupply()(uint256)' \
-            'USDN()(address)'; do
+            'USDN()(address)' \
+            'RESERVE()(uint256)'; do
             echo "USDNR_CALL $sig"
             cast call "$USDNR" "$sig" --rpc-url "$RPC_URL"
           done
@@ -41,7 +43,8 @@ jobs:
             'getAccessor()(address)' \
             'getOwner()(address)' \
             'getCreator()(address)' \
-            'totalSupply()(uint256)'; do
+            'totalSupply()(uint256)' \
+            'getTrackedAssets()(address[])'; do
             echo "SUSDN_CALL $sig"
             cast call "$SUSDN" "$sig" --rpc-url "$RPC_URL"
           done
@@ -52,8 +55,6 @@ jobs:
             'getVaultProxy()(address)' \
             'getDenominationAsset()(address)' \
             'getSharesActionTimelock()(uint256)' \
-            'getLastSharePrice()(uint256)' \
-            'getLastSharePriceUpdate()(uint256)' \
             'calcGav()(uint256)' \
             'calcGrossShareValue()(uint256)'; do
             echo "ACCESSOR_CALL $sig"
